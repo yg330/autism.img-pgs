@@ -1,0 +1,2059 @@
+---
+title: "pgs_img_UKB_v3"
+author: "Yuanjun Gu"
+date: "2023-04-16"
+output: html_document
+---
+# Setup
+```{r package load-in, include=FALSE}
+library(tidyverse) # General code writing
+library(here) # For reproducibility, remember open new project at the pgs_img folder
+library(jtools) # For automation of summarizing lm models
+library(huxtable, include.only = 'huxreg') # dependency of export_summ() in jtools package
+library(Hmisc, include.only = 'rcorr') # For correlation matrix generation
+library(corrplot) # For correlation matrix plot
+library(data.table, include.only = "fread") # For fast data read-in
+library(ggseg) # For brain plot
+library(ggsegGlasser) # For Glasser segmentation specifically, note: ggsegGlasser is not avaliable for this version of R[4.3.0], but I've downloaded through ggseg r-universe frollowing their github recommendation.
+library(car, include.only = 'vif') # for checking colinearity
+library(patchwork) # For adding plots together
+library(ggpubr) # For generating publication ready graphs
+library(openxlsx) # For exporting linear model summaries and more
+```
+
+```{r data read-in and clean up and age summary before scaled, echo=FALSE}
+
+UKBasd <- read.csv(here("PGS/UKB/Autism_grove_ipsychonly2020_PRSCS.txt"), header = T, sep = " ") # unstratified
+fUKBasd <- read.csv(here("PGS/UKB/Autism_grove_ipsychonly2020_females_PRSCS.txt"), header = T, sep = " ") # female
+mUKBasd <- read.csv(here("PGS/UKB/Autism_grove_ipsychonly2020_males_PRSCS.txt"), header = T, sep = " ") # male
+
+struc_pheno <- read.csv(here("QCd_pheno_covar/UKB/Structural_WB.txt"), header = T, sep = " ") # structural phenotypes
+scale_pheno <- read.csv(here("QCd_pheno_covar/UKB/WMpheno_scaled.txt"), header = T, sep = " ") # diffusion phenotypes
+
+struc_covar <- read.csv(here("QCd_pheno_covar/UKB/WMcovardiscrete_structural.txt"), header =T, sep = " ")
+scale_covar <- read.csv(here("QCd_pheno_covar/UKB/WMqcovar.txt"), header =T, sep = " ")
+batch_covar <- read.csv(here("QCd_pheno_covar/UKB/UKB_whitmatterandsomecovars.txt"), header =T, sep = " ") # not standardized data, only needed f.22000.0.0 for sequencing batch number
+
+summary(batch_covar$Age) # summary of age before being scaled
+
+batch_covar <- batch_covar[, c("f.eid", "f.22000.0.0")]
+# Only struc_pheno has higher (37509) obj than the rest of the dataset (31797)
+
+UKB.Data <- read.csv(here("QCd_pheno_covar/UKB/eTIV.csv"), header = T, sep = ",") # Read-in UKB data given by Richard
+UKB.Data$IID <- as.integer(gsub("UKB", "", UKB.Data$participant)) # participant = UKB+IID
+UKB.Data$FID <- as.integer(gsub("UKB", "", UKB.Data$participant))
+UKB.Data <- UKB.Data[, c("FID", "IID", "dx")] # Grabbing data needed only
+
+covar <- full_join(scale_covar, struc_covar, by = c("FID", "IID"))
+batch_covar <- rename(batch_covar, "IID" = "f.eid") # confirmed that f.eid is the same as IID as well as FID
+batch_covar <- rename(batch_covar, "batchID" = "f.22000.0.0") #rename to understandable label
+covar <- full_join(covar, batch_covar, by = "IID")
+covar <- rename(covar, "T1T2" = "Covar") # update to correct covar name
+covar$T1T2[covar$T1T2 == "T1"] <- 0      # correct label T1   (which actually is T1T1) to correct binary value
+covar$T1T2[covar$T1T2 == "T1T1"] <- 1    # correct label T1T1 (which actually is T1T2) to correct binary value
+remove(struc_covar, scale_covar, batch_covar) # remove unused object
+
+fUKBasd <- rename(fUKBasd, "ftotalsum" = "totalsum", "fPGS_scaled" = "PGS_scaled") # rename so when creating master data set it is not merged
+mUKBasd <- rename(mUKBasd, "mtotalsum" = "totalsum", "mPGS_scaled" = "PGS_scaled") # rename so when creating master data set it is not merged
+pgs.img <- list(covar, UKBasd, fUKBasd, mUKBasd, scale_pheno, struc_pheno, UKB.Data)
+pgs.img <- pgs.img %>% reduce(full_join, by= c("IID", "FID")) # merge data sets
+pgs.img <- pgs.img[!is.na(pgs.img$Age),] # Drop NAs by as they will only include structure phenotype not any other info
+
+pgs.img$Sex_Cat <-ifelse(pgs.img$Sex==0, "female", NA) # create new column Sex_Cat for easy grouping in plot with consideration of NA
+pgs.img$Sex_Cat <-ifelse(pgs.img$Sex==1, "male", pgs.img$Sex_Cat) # create new column Sex_Cat for easy grouping in plot
+
+remove(covar, fUKBasd, mUKBasd, scale_pheno, struc_pheno, UKBasd, UKB.Data) # remove unused object
+
+# Scale, as PCA, eular, fd, scan.site, batchID, Sex, T1T2 not scaled
+pgs.img$T1T2 <- as.numeric(pgs.img$T1T2)
+pgs.img[c(7:53)] <- scale(pgs.img[c(7:53)])
+```
+
+```{r create sex stratified population and rescale all continuouse variables}
+# Sex Stratification
+fpgs.img <- pgs.img[pgs.img$Sex_Cat == "female", ]
+mpgs.img <- pgs.img[pgs.img$Sex_Cat == "male", ]
+# 16833 are female, and 14964 are male
+
+# Re-scale after sex stratification
+# Exclude Categorical variables: dx, Sex_Cat, FID, IID
+fpgs.img[c(3:71)] <- scale(fpgs.img[c(3:71)])
+mpgs.img[c(3:71)] <- scale(mpgs.img[c(3:71)])
+
+```
+
+# Diagnosis and assumption checks
+```{r Cohort Description Report}
+# Sex Summary
+table(pgs.img$Sex_Cat)
+
+# Diagnosis Summary
+table(pgs.img$Sex_Cat, pgs.img$dx) 
+
+```
+
+```{r Q-Q plot for Normality Testing on MRI-derived phenotypes}
+par(mfrow = c(2, 2))
+qqnorm(pgs.img$Struct_SA, pch = 1, frame = FALSE, ylim = c(-6, 8), main = "Q-Q Plot for Surface Area")
+qqline(pgs.img$Struct_SA, col = "steelblue", lwd = 2)
+qqnorm(pgs.img$Struct_CT, pch = 1, frame = FALSE, ylim = c(-6, 8), main = "Q-Q Plot for Cortical Thickness")
+qqline(pgs.img$Struct_CT, col = "steelblue", lwd = 2)
+qqnorm(pgs.img$Struct_meanCurv, pch = 1, frame = FALSE, ylim = c(-6, 8), main = "Q-Q Plot for Mean Curvature")
+qqline(pgs.img$Struct_CT, col = "steelblue", lwd = 2)
+qqnorm(pgs.img$meanNODDI_ICVF, pch = 1, frame = FALSE, ylim = c(-6, 8), main = "Q-Q Plot for Intracellular Volume Fraction")
+qqline(pgs.img$Struct_CT, col = "steelblue", lwd = 2)
+```
+
+```{r Sex Differences shown in Density, Histogram, t-test and F-test, echo=FALSE}
+# F-test
+var.test(Struct_SA ~ Sex_Cat, data = pgs.img)
+var.test(Struct_CT ~ Sex_Cat, data = pgs.img)
+var.test(Struct_meanCurv ~ Sex_Cat, data = pgs.img)
+var.test(meanNODDI_ICVF ~ Sex_Cat, data = pgs.img)
+
+# t-test
+# In R, t-test default assumes unequal variance so no need for additional arguments
+t.test(Struct_SA ~ Sex_Cat, data = pgs.img)
+t.test(Struct_CT ~ Sex_Cat, data = pgs.img)
+t.test(Struct_meanCurv ~ Sex_Cat, data = pgs.img)
+t.test(meanNODDI_ICVF ~ Sex_Cat, data = pgs.img)
+
+# Density plot
+denSA <- ggdensity(pgs.img, x = "Struct_SA",add = "mean", rug = TRUE, color = "Sex_Cat", fill = "Sex_Cat", palette = c("#FF9999", "#00AFBB")) + xlim(-5,5) + ylim(0.0, 0.6) + 
+  labs(fill = "Sex", color = "Sex", x = "Surface Area in SD", caption = "F-test ***; t-test ***")
+
+denCT <- ggdensity(pgs.img, x = "Struct_CT",add = "mean", rug = TRUE, color = "Sex_Cat", fill = "Sex_Cat", palette = c("#FF9999", "#00AFBB")) + xlim(-5,5) + ylim(0.0, 0.6) + 
+  labs(fill = "Sex", color = "Sex", x = "Cortical Thickness in SD", caption = "F-test *, t-test ***")
+
+
+denMC <- ggdensity(pgs.img, x = "Struct_meanCurv",add = "mean", rug = TRUE, color = "Sex_Cat", fill = "Sex_Cat", palette = c("#FF9999", "#00AFBB")) + xlim(-5,5) + ylim(0.0, 0.6) + 
+  labs(fill = "Sex", color = "Sex", x = "Mean Curvature in SD", caption = "F-test **, t-test ***")
+
+
+denICVF <- ggdensity(pgs.img, x = "meanNODDI_ICVF",add = "mean", rug = TRUE, color = "Sex_Cat", fill = "Sex_Cat", palette = c("#FF9999", "#00AFBB")) + xlim(-5,5) + ylim(0.0, 0.6) + 
+  labs(fill = "Sex", color = "Sex", x = "Intracellular Volume Fraction in SD", caption = "F-test ***, t-test Not.Sig.")
+
+
+denALL <- denSA + denCT + denMC + denICVF
+denALL
+
+# citation for the group: * < 0.05, ** < 0.01, *** < 0.001
+
+```
+
+# Global Correlation Analysis
+```{r Correlation Matrix for PGS}
+# For between PGS
+pgs.rcorr = rcorr(as.matrix(pgs.img[, c(55,57,59)])) # P = 0, what does it mean?
+corrplot(pgs.rcorr$r, method = "color", type="upper", order="hclust", addCoef.col = "black", tl.col="black", tl.srt=45, 
+         p.mat = pgs.rcorr$P, sig.level = 0.05)
+
+# For IMG Phenotypes
+pgs.img.cor <- pgs.img
+pgs.img.cor <- rename(pgs.img.cor, "ICVF" = "meanNODDI_ICVF", "SA" = "Struct_SA", "MC" = "Struct_meanCurv", "CT" = "Struct_CT")
+fpgs.img.cor <- fpgs.img
+fpgs.img.cor <- rename(fpgs.img.cor, "ICVF" = "meanNODDI_ICVF", "SA" = "Struct_SA", "MC" = "Struct_meanCurv", "CT" = "Struct_CT")
+mpgs.img.cor <- mpgs.img
+mpgs.img.cor <- rename(mpgs.img.cor, "ICVF" = "meanNODDI_ICVF", "SA" = "Struct_SA", "MC" = "Struct_meanCurv", "CT" = "Struct_CT")
+
+img.rcorr <- rcorr(as.matrix(pgs.img.cor[, c(60, 66, 69, 70)])) # For un-stratified population
+f.img.rcorr <- rcorr(as.matrix(fpgs.img.cor[, c(60, 66, 69, 70)])) # For female population
+m.img.rcorr <- rcorr(as.matrix(mpgs.img.cor[, c(60, 66, 69, 70)])) # For male population
+
+# The output of corrplot produces a p-values matrix with zeroes on the diagonal. 
+# The output of rcorr produces a matrix of p-values with NA on the diagonal. 
+# This generates error message and stops corrplot from functioning. 
+# Fix suggested by stackoverflow is: Replace your NA diagonal values with zeroes.
+# Source: https://stackoverflow.com/questions/70218485/corrplot-error-arguments-imply-differing-number-of-rows
+
+img.rcorr$P[is.na(img.rcorr$P)] <- 0
+f.img.rcorr$P[is.na(f.img.rcorr$P)] <- 0
+m.img.rcorr$P[is.na(m.img.rcorr$P)] <- 0
+
+corrplot(img.rcorr$r, method="color", type="upper", order="alphabet", title = "Unstratified IMG Correlation", 
+         addCoef.col = "black", tl.col="black", tl.srt=45, p.mat = f.img.rcorr$P, sig.level = 0.05, mar=c(0,0,2,0))
+corrplot(f.img.rcorr$r, method="color", type="upper", order="alphabet", title = "Female IMG Correlation", 
+         addCoef.col = "black", tl.col="black", tl.srt=45, p.mat = f.img.rcorr$P, sig.level = 0.05, mar=c(0,0,2,0))
+corrplot(m.img.rcorr$r, method="color", type="upper", order="alphabet", title = "Male IMG Correlation", 
+         addCoef.col = "black", tl.col="black", tl.srt=45, p.mat = m.img.rcorr$P, sig.level = 0.05, mar=c(0,0,2,0))
+# Graph improvement idea for reordering: rstatix::corr_reorder()
+```
+
+# Study of Global phenotype effect through Linear fixed effect models and summary
+```{r Lm for IMG~PGS to study the Impact of PGS on brain structure}
+
+# Using PGS_scaled value + sex + age + age^2 + age*sex + + age^2*sex + PC1...PC10 + scanning site + Euler Index + Frame wise displacement + batchId + T1T2 (only for struct_*)
+# Total sum is skipped from now on as lm results are similar and generates same diagnosis graph in comparison to scaled_PGS
+
+PGS.Str_SA <- lm(Struct_SA ~ PGS_scaled + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + 
+                           X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = pgs.img)
+
+PGS.Str_CT <- lm(Struct_CT ~ PGS_scaled + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + 
+                           X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = pgs.img)
+
+PGS.Str_MC <- lm(Struct_meanCurv ~ PGS_scaled + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + 
+                           X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, 
+                         data = pgs.img)
+
+PGS.ICVF <- lm(meanNODDI_ICVF ~ PGS_scaled + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + 
+                           X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + batchID, data = pgs.img)
+
+```
+
+```{r Lm for IMG~PGS + PGS:SEX to study the Impact of Sex:PGS on brain structure}
+PGS.sex.Str_SA <- lm(Struct_SA ~ PGS_scaled + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + PGS_scaled * Sex + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + 
+                           X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = pgs.img)
+
+PGS.sex.Str_CT <- lm(Struct_CT ~ PGS_scaled + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + PGS_scaled * Sex + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + 
+                           X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = pgs.img)
+
+PGS.sex.Str_MC <- lm(Struct_meanCurv ~ PGS_scaled + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + PGS_scaled * Sex + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + 
+                           X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, 
+                         data = pgs.img)
+
+PGS.sex.ICVF <- lm(meanNODDI_ICVF ~ PGS_scaled + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + PGS_scaled * Sex + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + 
+                           X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + batchID, data = pgs.img)
+
+```
+
+```{r summary result for all IMG~PGS models, results = 'asis'}
+# For SA
+export_summs(PGS.Str_SA, PGS.sex.Str_SA,
+             model.names = c("SA~PGS", "SA~PGS + Sex Interaction"),
+             coefs = c("(Intercept)", "Sex", "Age", "Age^2" = "Agesquared", "Sex:Age", "Sex:Age^2" = "Sex:Agesquared", 
+                       "PGS_scaled", "PGS:Sex" = "PGS_scaled:Sex"))
+
+# For CT
+export_summs(PGS.Str_CT, PGS.sex.Str_CT, 
+             model.names = c("CT~PGS", "CT~PGS + Sex Interaction"), 
+             coefs = c("(Intercept)", "Sex", "Age", "Age^2" = "Agesquared", "Sex:Age", "Sex:Age^2" = "Sex:Agesquared", 
+                       "PGS_scaled", "PGS:Sex" = "PGS_scaled:Sex"))
+
+# For MC
+export_summs(PGS.Str_MC, PGS.sex.Str_MC, 
+             model.names = c("MC~PGS", "MC~PGS + Sex Interaction"), 
+             coefs = c("(Intercept)", "Sex", "Age", "Age^2" = "Agesquared", "Sex:Age", "Sex:Age^2" = "Sex:Agesquared", 
+                       "PGS_scaled", "PGS:Sex" = "PGS_scaled:Sex"))
+
+# For ICVF
+export_summs(PGS.ICVF, PGS.sex.ICVF, 
+             model.names = c("ICVF~PGS", "ICVF~PGS + Sex Interaction"), 
+             coefs = c("(Intercept)", "Sex", "Age", "Age^2" = "Agesquared", "Sex:Age", "Sex:Age^2" = "Sex:Agesquared", 
+                       "PGS_scaled", "PGS:Sex" = "PGS_scaled:Sex"))
+```
+
+## Conclusion: For global phenotype, sex, age, age^2 and sometimes PGS are important factors that affects towards brain structure, but not PGS:Sex interaction effect.
+
+
+# Study of Sex Difference between male and female population through Linear fixed effect models and summary
+```{r Global lm for IMG~fPGS/mPGS in female and male only population to study the Sex-specific Impact of fPGS/mPGS on brain structure}
+# For female
+fPGS.Str_SA <- lm(Struct_SA ~ fPGS_scaled + Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + 
+                           X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = fpgs.img)
+
+fPGS.Str_CT <- lm(Struct_CT ~ fPGS_scaled + Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + 
+                           X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = fpgs.img)
+
+fPGS.Str_MC <- lm(Struct_meanCurv ~ fPGS_scaled + Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + 
+                           X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = fpgs.img)
+
+fPGS.ICVF <- lm(meanNODDI_ICVF ~ fPGS_scaled + Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + 
+                           X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + batchID, data = fpgs.img)
+
+# For Male
+mPGS.Str_SA <- lm(Struct_SA ~ mPGS_scaled + Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 
+                  + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = mpgs.img)
+
+mPGS.Str_CT <- lm(Struct_CT ~ mPGS_scaled + Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + 
+                           X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = mpgs.img)
+
+mPGS.Str_MC <- lm(Struct_meanCurv ~ mPGS_scaled + Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + 
+                           X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = mpgs.img)
+
+mPGS.ICVF <- lm(meanNODDI_ICVF ~ mPGS_scaled + Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + 
+                           X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + batchID, data = mpgs.img)
+```
+
+```{r summary result for all IMG~PGS models + sex stratification, results = 'asis'}
+# For SA
+export_summs(PGS.Str_SA, PGS.sex.Str_SA, fPGS.Str_SA, mPGS.Str_SA,
+             model.names = c("SA~PGS", "SA~PGS + Sex Interaction", "fSA~fPGS", "mSA~mPGS"),
+             coefs = c("(Intercept)", "Sex", "Age", "Age^2" = "Agesquared", "Sex:Age", "Sex:Age^2" = "Sex:Agesquared", 
+                       "PGS_scaled", "fPGS_scaled", "mPGS_scaled", "PGS:Sex" = "PGS_scaled:Sex"))
+
+# For CT
+export_summs(PGS.Str_CT, PGS.sex.Str_CT, fPGS.Str_CT, mPGS.Str_CT,
+             model.names = c("CT~PGS", "CT~PGS + Sex Interaction", "fCT~fPGS", "mCT~mPGS"), 
+             coefs = c("(Intercept)", "Sex", "Age", "Age^2" = "Agesquared", "Sex:Age", "Sex:Age^2" = "Sex:Agesquared", 
+                       "PGS_scaled", "fPGS_scaled", "mPGS_scaled", "PGS:Sex" = "PGS_scaled:Sex"))
+
+# For MC
+export_summs(PGS.Str_MC, PGS.sex.Str_MC,  fPGS.Str_MC, mPGS.Str_MC,
+             model.names = c("MC~PGS", "MC~PGS + Sex Interaction", "fMC~fPGS", "mMC~mPGS"), 
+             coefs = c("(Intercept)", "Sex", "Age", "Age^2" = "Agesquared", "Sex:Age", "Sex:Age^2" = "Sex:Agesquared", 
+                       "PGS_scaled", "fPGS_scaled", "mPGS_scaled", "PGS:Sex" = "PGS_scaled:Sex"))
+
+# For ICVF
+export_summs(PGS.ICVF, PGS.sex.ICVF,  fPGS.ICVF, mPGS.ICVF,
+             model.names = c("ICVF~PGS", "ICVF~PGS + Sex Interaction", "fICVF~fPGS", "mICVF~mPGS"), 
+             coefs = c("(Intercept)", "Sex", "Age", "Age^2" = "Agesquared", "Sex:Age", "Sex:Age^2" = "Sex:Agesquared", 
+                       "PGS_scaled", "fPGS_scaled", "mPGS_scaled", "PGS:Sex" = "PGS_scaled:Sex"))
+
+```
+
+## Conclusion: For global phenotype, fPGS in female population is significantly associate with Surface Area and Cortical thickness, but otherwise no observed effect of sex difference from mPGS in male population.
+## Thought: Maybe we should check on the original code used for generating fPGS and mPGS, as fPGS seem to have much more effect in the direction predicted than mPGS, despite power.
+
+
+# Data Visualisation of PGS, fPGS in female, mPGS in male and PGS:SEX effect using summary result plot, Inc.R2 plot and prediction effect plot
+
+```{r create lm for IMG~Covar for unstratified, female and male population}
+# For Unstratified Population
+Str_SA <- lm(Struct_SA ~ Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + 
+                           X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = pgs.img)
+
+Str_CT <- lm(Struct_CT ~ Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + 
+                           X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = pgs.img)
+
+Str_MC <- lm(Struct_meanCurv ~ Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + 
+                           X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, 
+                         data = pgs.img)
+
+ICVF <- lm(meanNODDI_ICVF ~ Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + 
+                           X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + batchID, data = pgs.img)
+
+# For female population
+fStr_SA <- lm(Struct_SA ~ Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + 
+                           X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = fpgs.img)
+
+fStr_CT <- lm(Struct_CT ~ Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + 
+                           X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = fpgs.img)
+
+fStr_MC <- lm(Struct_meanCurv ~ Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + 
+                           X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, 
+                         data = fpgs.img)
+
+fICVF <- lm(meanNODDI_ICVF ~ Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + 
+                           X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + batchID, data = fpgs.img)
+
+# For male population
+mStr_SA <- lm(Struct_SA ~ Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + 
+                           X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = mpgs.img)
+
+mStr_CT <- lm(Struct_CT ~ Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + 
+                           X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = mpgs.img)
+
+mStr_MC <- lm(Struct_meanCurv ~ Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + 
+                           X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + T1T2 + batchID, 
+                         data = mpgs.img)
+
+mICVF <- lm(meanNODDI_ICVF ~ Age + Agesquared + X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + 
+                           X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + Scan.Site + eulerleftplusright + fd + batchID, data = mpgs.img)
+```
+
+```{r summary result for IMG~PGS vs IMG~Covar in unstratified, female and male population, results = 'asis'}
+
+# For SA
+export_summs(PGS.Str_SA, PGS.sex.Str_SA, fPGS.Str_SA, mPGS.Str_SA, Str_SA, fStr_SA, mStr_SA,
+             model.names = c("SA~PGS", "SA~PGS + Sex Interaction", "fSA~fPGS", "mSA~mPGS", "SA~Covar", "fSA~Covar", "mSA~Covar"),
+             coefs = c("(Intercept)", "Sex", "Age", "Age^2" = "Agesquared", "Sex:Age", "Sex:Age^2" = "Sex:Agesquared", 
+                       "PGS_scaled", "fPGS_scaled", "mPGS_scaled", "PGS:Sex" = "PGS_scaled:Sex"))
+
+# For CT
+export_summs(PGS.Str_CT, PGS.sex.Str_CT, fPGS.Str_CT, mPGS.Str_CT, Str_CT, fStr_CT, mStr_CT,
+             model.names = c("CT~PGS", "CT~PGS + Sex Interaction", "fCT~fPGS", "mCT~mPGS", "CT~Covar", "fCT~Covar", "mCT~Covar"),
+             coefs = c("(Intercept)", "Sex", "Age", "Age^2" = "Agesquared", "Sex:Age", "Sex:Age^2" = "Sex:Agesquared", 
+                       "PGS_scaled", "fPGS_scaled", "mPGS_scaled", "PGS:Sex" = "PGS_scaled:Sex"))
+# For MC
+export_summs(PGS.Str_MC, PGS.sex.Str_MC, fPGS.Str_MC, mPGS.Str_MC, Str_MC, fStr_MC, mStr_MC,
+             model.names = c("MC~PGS", "MC~PGS + Sex Interaction", "fMC~fPGS", "mMC~mPGS", "MC~Covar", "fMC~Covar", "mMC~Covar"),
+             coefs = c("(Intercept)", "Sex", "Age", "Age^2" = "Agesquared", "Sex:Age", "Sex:Age^2" = "Sex:Agesquared", 
+                       "PGS_scaled", "fPGS_scaled", "mPGS_scaled", "PGS:Sex" = "PGS_scaled:Sex"))
+# For ICVF
+export_summs(PGS.ICVF, PGS.sex.ICVF, fPGS.ICVF, mPGS.ICVF, ICVF, fICVF, mICVF,
+             model.names = c("ICVF~PGS", "ICVF~PGS + Sex Interaction", "fICVF~fPGS", "mICVF~mPGS", "ICVF~Covar", "fICVF~Covar", "mICVF~Covar"),
+             coefs = c("(Intercept)", "Sex", "Age", "Age^2" = "Agesquared", "Sex:Age", "Sex:Age^2" = "Sex:Agesquared", 
+                       "PGS_scaled", "fPGS_scaled", "mPGS_scaled", "PGS:Sex" = "PGS_scaled:Sex"))
+
+
+```
+
+```{r export linear model coefficient summary into tables, eval=FALSE, include=FALSE}
+summary(PGS.Str_SA)
+summary(PGS.Str_CT)
+summary(PGS.Str_MC)
+summary(PGS.ICVF)
+summary(PGS.sex.Str_SA)
+summary(PGS.sex.Str_CT)
+summary(PGS.sex.Str_MC)
+summary(PGS.sex.ICVF)
+summary(fPGS.Str_SA)
+summary(fPGS.Str_CT)
+summary(fPGS.Str_MC)
+summary(fPGS.ICVF)
+summary(mPGS.Str_SA)
+summary(mPGS.Str_CT)
+summary(mPGS.Str_MC)
+summary(mPGS.ICVF)
+
+list.excel.export <- list("PGS_SA" = data.frame(summary(PGS.Str_SA)$coefficient), "PGS_CT" = data.frame(summary(PGS.Str_CT)$coefficient), "PGS_MC" = data.frame(summary(PGS.Str_MC)$coefficient),
+                          "PGS_ICVF" = data.frame(summary(PGS.ICVF)$coefficient), "PGS_SA_SEX" = data.frame(summary(PGS.sex.Str_SA)$coefficient), "PGS_CT_SEX" = data.frame(summary(PGS.sex.Str_CT)$coefficient),
+                          "PGS_MC_SEX" = data.frame(summary(PGS.sex.Str_MC)$coefficient), "PGS_ICVF_SEX" = data.frame(summary(PGS.sex.ICVF)$coefficient), "FPGS_SA" = data.frame(summary(fPGS.Str_SA)$coefficient), 
+                          "FPGS_CT" = data.frame(summary(fPGS.Str_CT)$coefficient), "FPGS_MC" = data.frame(summary(fPGS.Str_MC)$coefficient), "FPGS_ICVF" = data.frame(summary(fPGS.ICVF)$coefficient), 
+                          "MPGS_SA" = data.frame(summary(mPGS.Str_SA)$coefficient), "MPGS_CT" = data.frame(summary(mPGS.Str_CT)$coefficient), "MPGS_MC" = data.frame(summary(mPGS.Str_MC)$coefficient), 
+                          "MPGS_ICVF" = data.frame(summary(mPGS.ICVF)$coefficient))
+write.xlsx(list.excel.export, file = here("Report/linear_model_coefficient_summary_UKB.xlsx"), rowNames=TRUE) 
+```
+
+```{r Inc.R2 for PGS and PGS:SEX}
+# Inc.R2 filling loop for PGS, fPGS and mPGS: IMG~PGS/fPGS/mPGS - IMG~COVAR
+
+inc.R2 <- data.frame (IMG  = c(rep("SA", 3), rep("CT", 3), rep("MC", 3), rep("ICVF", 3)), R2 = NA, Label = rep(1:3, 4), Population = rep(1:3,4)) # Create Empty R2 dataframe
+
+inc.R2 <- inc.R2 %>% mutate(Label = case_when(
+  Label == 1 ~ "PGS",
+  Label == 2 ~ "fPGS",
+  Label == 3 ~ "mPGS"
+  ))
+
+inc.R2 <- inc.R2 %>% mutate(Population = case_when(
+  Population == 1 ~ "Unstratified",
+  Population == 2 ~ "Female",
+  Population == 3 ~ "Male"
+  ))
+
+data_files = list("PGS.Str_SA" = PGS.Str_SA, "fPGS.Str_SA" = fPGS.Str_SA, "mPGS.Str_SA" = mPGS.Str_SA, 
+                  "PGS.Str_CT" = PGS.Str_CT, "fPGS.Str_CT" = fPGS.Str_CT, "mPGS.Str_CT" = mPGS.Str_CT, 
+                  "PGS.Str_MC" = PGS.Str_MC, "fPGS.Str_MC" = fPGS.Str_MC, "mPGS.Str_MC" = mPGS.Str_MC, 
+                  "PGS.ICVF" = PGS.ICVF, "fPGS.ICVF" = fPGS.ICVF, "mPGS.ICVF" = mPGS.ICVF,
+                  "Str_SA" = Str_SA, "fStr_SA" = fStr_SA, "mStr_SA" = mStr_SA, 
+                  "Str_CT" = Str_CT, "fStr_CT" = fStr_CT, "mStr_CT" = mStr_CT, 
+                  "Str_MC" = Str_MC, "fStr_MC" = fStr_MC, "mStr_MC" = mStr_MC, 
+                  "ICVF" = ICVF, "fICVF" = fICVF, "mICVF" = mICVF) # list relevant files and assign names for looping
+
+for (i in 1:12) {
+  print(paste("Working on:", names(data_files[i]), "and", names(data_files[i+12])))
+  inc.R2[i, 2] <- summary(data_files[[i]])$adj.r.squared - summary(data_files[[i+12]])$adj.r.squared
+}
+
+
+# In.R2 filling loop for for PGS:SEX: IMG~PGS:SEX-IMG~PGS (for completion sake, not significant)
+inc.R2.sex.interaction <- data.frame (IMG  = c("SA", "CT","MC", "ICVF"), R2 = NA, Label = "PGS:Sex", Population = "unstratified") # Create Empty R2 dataframe
+
+data_files = list("PGS.sex.Str_SA" = PGS.sex.Str_SA, "PGS.sex.Str_CT" = PGS.sex.Str_CT, "PGS.sex.Str_MC" = PGS.sex.Str_MC, "PGS.sex.ICVF" = PGS.sex.ICVF,
+                  "PGS.Str_SA" = PGS.Str_SA, "PGS.Str_CT" = PGS.Str_CT, "PGS.Str_MC" = PGS.Str_MC, "PGS.ICVF" = PGS.ICVF) # list relevant files and assign names for looping
+
+for (i in 1:4) {
+  print(paste("Working on:", names(data_files[i]), "and", names(data_files[i+4])))
+  inc.R2.sex.interaction[i, 2] <- summary(data_files[[i]])$adj.r.squared - summary(data_files[[i+4]])$adj.r.squared
+}
+
+inc.R2
+inc.R2.sex.interaction
+
+```
+
+```{r Inc.R2 Visualisation for Global Phenotypes}
+inc.R2$Association <- c(rep("negative", 3), rep("positive", 3), rep("negative", 6)) # insert color after checking coefficient summary for lm
+inc.R2$sig <- c(rep(c("**", "*", NA), 2), rep(NA, 3), "*", rep(NA, 2)) # same as above, insert sig annotation
+
+# For PGS/fPGS/mPGS effect in unstratified, female and male population
+inc.R2.fig <- ggplot(inc.R2, aes(y=R2, x= factor(IMG, levels = c("SA", "CT", "MC", "ICVF")), col = Association, fill = Association)) + 
+  geom_bar(position="dodge", stat="identity") + facet_wrap(~Label) + scale_fill_manual(values=c("skyblue", "tomato")) + scale_color_manual(values=c("skyblue", "tomato")) + 
+  labs(y = "Inc.R^2 for PGS/fPGS/mPGS", x = "IMG Phenotypes") + 
+  ggtitle("Inc.R2 for PGS, fPGS and mPGS in sex stratified and unstratified UKB population") + geom_text(aes(label = sig), col = "black", vjust = -0.25) + ylim(-5e-04, 2e-03)
+  
+inc.R2.fig
+
+
+#For PGS:Sex interaction effect in unstratified population
+inc.R2.sex.interaction$Association <- c(rep("negative", 3), "positive") # insert color after checking coefficient summary for lm
+# No sig PGS:SEX coefficient
+
+inc.R2.sex.fig <- ggplot(inc.R2.sex.interaction, aes(y = R2, x = factor(IMG, levels = c("SA", "CT", "MC", "ICVF")), col = Association, fill = Association)) + 
+  geom_bar(position="dodge", stat="identity") + ggtitle("Incremental R2 for unstratified UKB population") + labs(x = "IMG Phenotypes", y = "Inc.R^2 for PGS:SEX") +
+  scale_fill_manual(values=c("skyblue", "tomato")) + scale_color_manual(values=c("skyblue", "tomato")) + ylim(-5e-04, 2e-03)
+inc.R2.sex.fig
+
+```
+
+```{r check multiple colinearity}
+# VIF exceeding 5 or 10 indicates high multicollinearity between this independent variable and the others
+# Age and Agesquared are highly colinear with each other is as expected. No fault found.
+
+vif(PGS.Str_SA, type = "predictor")
+vif(PGS.Str_CT, type = "predictor")
+vif(PGS.Str_MC, type = "predictor")
+vif(PGS.ICVF, type = "predictor")
+
+vif(PGS.sex.Str_SA, type = "predictor")
+vif(PGS.sex.Str_CT, type = "predictor")
+vif(PGS.sex.Str_MC, type = "predictor")
+vif(PGS.sex.ICVF, type = "predictor")
+
+data.frame(vif(fPGS.Str_SA))
+data.frame(vif(fPGS.Str_CT))
+data.frame(vif(fPGS.Str_MC))
+data.frame(vif(fPGS.ICVF))
+
+vif(mPGS.Str_SA)
+vif(mPGS.Str_CT)
+vif(mPGS.Str_MC)
+vif(mPGS.ICVF)
+
+list.excel.export <- list("PGS_SA" = vif(PGS.Str_SA, type = "predictor"), "PGS_CT" = vif(PGS.Str_CT, type = "predictor"), "PGS_MC" = vif(PGS.Str_MC, type = "predictor"),
+                          "PGS_ICVF" = vif(PGS.ICVF, type = "predictor"), "PGS_SA_SEX" = vif(PGS.sex.Str_SA, type = "predictor"), "PGS_CT_SEX" = vif(PGS.sex.Str_CT, type = "predictor"),
+                          "PGS_MC_SEX" = vif(PGS.sex.Str_MC, type = "predictor"), "PGS_ICVF_SEX" = vif(PGS.sex.ICVF, type = "predictor"), "FPGS_SA" = data.frame(vif(fPGS.Str_SA)), 
+                          "FPGS_CT" = data.frame(vif(fPGS.Str_CT)), "FPGS_MC" = data.frame(vif(fPGS.Str_MC)), "FPGS_ICVF" = data.frame(vif(fPGS.ICVF)), 
+                          "MPGS_SA" = data.frame(vif(mPGS.Str_SA)), "MPGS_CT" = data.frame(vif(mPGS.Str_CT)), "MPGS_MC" = data.frame(vif(mPGS.Str_MC)), 
+                          "MPGS_ICVF" = data.frame(vif(mPGS.ICVF)))
+write.xlsx(list.excel.export, file = here("Report/vif_summary_UKB.xlsx"), rowNames=TRUE)
+
+```
+
+```{r visualising linear regression}
+# visualise linear regression
+# Black = unstratified; tomato = Female; #00AFBB = Male
+# For SA
+PGS.SA.lm.vis <- ggplot(PGS.Str_SA, aes(PGS_scaled, Struct_SA)) + geom_smooth(method = "lm", colour = "black", linewidth = 0.5) +
+  stat_smooth(data = fPGS.Str_SA, inherit.aes = FALSE, aes(fPGS_scaled, Struct_SA), method = "lm", colour = "tomato", linewidth = 0.5) + 
+  stat_smooth(data = mPGS.Str_SA, inherit.aes = FALSE, aes(mPGS_scaled, Struct_SA), method = "lm", colour = "#00AFBB", linewidth = 0.5) + xlim(-5,5) +
+  labs(y = "Surface Area", x = "PGS/fPGS/mPGS in SD")
+
+# For CT
+PGS.CT.lm.vis <- ggplot(PGS.Str_CT, aes(PGS_scaled, Struct_CT)) + geom_smooth(method = "lm", colour = "black", linewidth = 0.5) +
+  stat_smooth(data = fPGS.Str_CT, inherit.aes = FALSE, aes(fPGS_scaled, Struct_CT), method = "lm", colour = "tomato", linewidth = 0.5) + 
+  stat_smooth(data = mPGS.Str_CT, inherit.aes = FALSE, aes(mPGS_scaled, Struct_CT), method = "lm", colour = "#00AFBB", linewidth = 0.5) + xlim(-5,5) + 
+  labs(y = "Cortical Thickness", x = "PGS/fPGS/mPGS in SD")
+
+# For MC
+PGS.MC.lm.vis <- ggplot(PGS.Str_MC, aes(PGS_scaled, Struct_meanCurv)) + geom_smooth(method = "lm", colour = "black", linewidth = 0.5) +
+  stat_smooth(data = fPGS.Str_MC, inherit.aes = FALSE, aes(fPGS_scaled, Struct_meanCurv), method = "lm", colour = "tomato", linewidth = 0.5) + 
+  stat_smooth(data = mPGS.Str_MC, inherit.aes = FALSE, aes(mPGS_scaled, Struct_meanCurv), method = "lm", colour = "#00AFBB", linewidth = 0.5) + xlim(-5,5) + 
+  labs(y = "Mean Curvature", x = "PGS/fPGS/mPGS in SD")
+
+# For ICVF
+PGS.ICVF.lm.vis <- ggplot(PGS.ICVF, aes(PGS_scaled, meanNODDI_ICVF)) + geom_smooth(method = "lm", colour = "black", linewidth = 0.5) +
+  stat_smooth(data = fPGS.ICVF, inherit.aes = FALSE, aes(fPGS_scaled, meanNODDI_ICVF), method = "lm", colour = "tomato", linewidth = 0.5) + 
+  stat_smooth(data = mPGS.ICVF, inherit.aes = FALSE, aes(mPGS_scaled, meanNODDI_ICVF), method = "lm", colour = "#00AFBB", linewidth = 0.5) + xlim(-5,5) + 
+  labs(y = "Intracellular Volume Fraction", x = "PGS/fPGS/mPGS in SD")
+
+PGS.IMG.lm.ALL <- (PGS.SA.lm.vis | PGS.CT.lm.vis) / (PGS.MC.lm.vis| PGS.ICVF.lm.vis)
+PGS.IMG.lm.ALL
+
+# PROBLEM: Will remove so many points if I try to set a ylim, how to fix it?
+
+```
+
+```{r combinational effect plot (prediction plot) using jtool sourse code}
+PGS.eff.SA <-  effect_plot(PGS.Str_SA, pred = PGS_scaled, interval = TRUE, colors ="Black") + xlim(-5,5) + ylim(-0.3,0.3) + labs(y = "Surface Area", x = "PGS")
+fPGS.eff.SA <- effect_plot(fPGS.Str_SA, pred = fPGS_scaled, interval = TRUE, colors ="tomato") + xlim(-5,5) + ylim(-0.3,0.3) + labs(y = "Surface Area", x = "fPGS")
+mPGS.eff.SA <- effect_plot(mPGS.Str_SA, pred = mPGS_scaled, interval = TRUE, colors ="#00AFBB") + xlim(-5,5) + ylim(-0.3,0.3) + labs(y = "Surface Area", x = "mPGS")
+effSA <- PGS.eff.SA + fPGS.eff.SA + mPGS.eff.SA
+effSA
+
+PGS.eff.CT <- effect_plot(PGS.Str_CT, pred = PGS_scaled, interval = TRUE) + xlim(-5,5) + ylim(-0.3,0.3) + labs(y = "Cortical Thickness", x = "PGS")
+fPGS.eff.CT <- effect_plot(fPGS.Str_CT, pred = fPGS_scaled, interval = TRUE, colors ="tomato") + xlim(-5,5) + ylim(-0.3,0.3) + labs(y = "Cortical Thickness", x = "fPGS")
+mPGS.eff.CT <- effect_plot(mPGS.Str_CT, pred = mPGS_scaled, interval = TRUE, colors ="#00AFBB")+ xlim(-5,5) + ylim(-0.3,0.3) + labs(y = "Cortical Thickness", x = "mPGS")
+effCT <- PGS.eff.CT + fPGS.eff.CT + mPGS.eff.CT
+effCT
+
+PGS.eff.MC <- effect_plot(PGS.Str_MC, pred = PGS_scaled, interval = TRUE) + xlim(-5,5) + ylim(-0.3,0.3) + labs(y = "Mean Curvature", x = "PGS")
+fPGS.eff.MC <- effect_plot(fPGS.Str_MC, pred = fPGS_scaled, interval = TRUE, colors ="tomato") + xlim(-5,5) + ylim(-0.3,0.3) + labs(y = "Mean Curvature", x = "fPGS")
+mPGS.eff.MC <- effect_plot(mPGS.Str_MC, pred = mPGS_scaled, interval = TRUE, colors ="#00AFBB")+ xlim(-5,5) + ylim(-0.3,0.3) + labs(y = "Mean Curvature", x = "mPGS")
+effMC <- PGS.eff.MC + fPGS.eff.MC + mPGS.eff.MC
+effMC
+
+PGS.eff.ICVF <- effect_plot(PGS.ICVF, pred = PGS_scaled, interval = TRUE) + xlim(-5,5) + ylim(-0.3,0.3) + labs(y = "Intracellular Volume Fraction", x = "PGS")
+fPGS.eff.ICVF <- effect_plot(fPGS.ICVF, pred = fPGS_scaled, interval = TRUE, colors ="tomato") + xlim(-5,5) + ylim(-0.3,0.3) + labs(y = "Intracellular Volume Fraction", x = "fPGS")
+mPGS.eff.ICVF <- effect_plot(mPGS.ICVF, pred = mPGS_scaled, interval = TRUE, colors ="#00AFBB") + xlim(-5,5) + ylim(-0.3,0.3) + labs(y = "Intracellular Volume Fraction", x = "mPGS")
+effICVF <- PGS.eff.ICVF + fPGS.eff.ICVF + mPGS.eff.ICVF
+effICVF
+
+# I've tried but effect_plot doesn't support plotting multiple graph together, and in order to change it I'll need deep understanding of his code and make it work.
+# From the source code I've located his key function on using make_prediction() but I couldn't fully understand his ggplot2 code.
+# I'm running out of time for this week, I'll come back later but at my current of R coding level I don't feel I can do much.
+
+```
+
+# Study of Regional Phenotype effect through Linear fixed effect models and summary
+
+```{r read-in raw regional effect tables and create IMG~Reg.PGS datasets, eval=FALSE, include=FALSE}
+# Remove load-in object for memory
+rm(list= ls()[!(ls() %in% c('pgs.img','fpgs.img', "mpgs.img"))])
+
+# Read in raw regional IMG data
+Raw.SA <- read.csv(here("QCd_pheno_covar/UKB/SA_v2.txt"), header = T, sep = " ")
+Raw.CT <- read.csv(here("QCd_pheno_covar/UKB/CT_v2.txt"), header = T, sep = " ")
+Raw.MC <- read.csv(here("QCd_pheno_covar/UKB/meancurv_v2.txt"), header = T, sep = " ")
+Raw.ICVF <- read.csv(here("QCd_pheno_covar/UKB/ICVF.txt"), header = T, sep = " ")
+
+# clean-up pgs.img dataset
+pgs.img <- pgs.img[, c(2:16, 47:53, 55, 57, 59, 60, 66, 69, 70)]
+fpgs.img <- fpgs.img[, c(2:16, 47:53, 55, 57, 59, 60, 66, 69, 70)]
+mpgs.img <- mpgs.img[, c(2:16, 47:53, 55, 57, 59, 60, 66, 69, 70)]
+
+# merge to pgs.img group
+reg.pgs.SA <- list(pgs.img, Raw.SA)
+reg.pgs.SA <- reg.pgs.SA %>% reduce(left_join, by= c("IID")) 
+# merge data sets, remove row if IID (i.e. FID too) not present in pgs.img
+
+reg.pgs.CT <- list(pgs.img, Raw.CT)
+reg.pgs.CT <- reg.pgs.CT %>% reduce(left_join, by= c("IID")) # merge data sets
+
+reg.pgs.MC <- list(pgs.img, Raw.MC)
+reg.pgs.MC <- reg.pgs.MC %>% reduce(left_join, by= c("IID")) # merge data sets
+
+reg.pgs.ICVF <- list(pgs.img, Raw.ICVF)
+reg.pgs.ICVF <- reg.pgs.ICVF %>% reduce(left_join, by= c("IID")) # merge data sets
+
+# merge to fpgs.img group
+
+f.reg.pgs.SA <- list(fpgs.img, Raw.SA)
+f.reg.pgs.SA <- f.reg.pgs.SA %>% reduce(left_join, by= c("IID")) 
+
+f.reg.pgs.CT <- list(fpgs.img, Raw.CT)
+f.reg.pgs.CT <- f.reg.pgs.CT %>% reduce(left_join, by= c("IID")) # merge data sets
+
+f.reg.pgs.MC <- list(fpgs.img, Raw.MC)
+f.reg.pgs.MC <- f.reg.pgs.MC %>% reduce(left_join, by= c("IID")) # merge data sets
+
+f.reg.pgs.ICVF <- list(fpgs.img, Raw.ICVF)
+f.reg.pgs.ICVF <- f.reg.pgs.ICVF %>% reduce(left_join, by= c("IID")) # merge data sets
+
+
+# merge to mpgs.img group
+m.reg.pgs.SA <- list(mpgs.img, Raw.SA)
+m.reg.pgs.SA <- m.reg.pgs.SA %>% reduce(left_join, by= c("IID")) 
+# merge data sets, remove row if IID and FID not present in pgs.img
+
+m.reg.pgs.CT <- list(mpgs.img, Raw.CT)
+m.reg.pgs.CT <- m.reg.pgs.CT %>% reduce(left_join, by= c("IID")) # merge data sets
+
+m.reg.pgs.MC <- list(mpgs.img, Raw.MC)
+m.reg.pgs.MC <- m.reg.pgs.MC %>% reduce(left_join, by= c("IID")) # merge data sets
+
+m.reg.pgs.ICVF <- list(mpgs.img, Raw.ICVF)
+m.reg.pgs.ICVF <- m.reg.pgs.ICVF %>% reduce(left_join, by= c("IID")) # merge data sets
+
+# removed unused variables
+remove(Raw.SA, Raw.CT, Raw.MC, Raw.ICVF)
+
+# Set-up for looping
+data_files = list("reg.pgs.SA" = reg.pgs.SA, "reg.pgs.CT" = reg.pgs.CT, "reg.pgs.MC" = reg.pgs.MC, "reg.pgs.ICVF" = reg.pgs.ICVF, 
+                  "f.reg.pgs.SA" = f.reg.pgs.SA, "f.reg.pgs.CT" = f.reg.pgs.CT, "f.reg.pgs.MC" = f.reg.pgs.MC, "f.reg.pgs.ICVF" = f.reg.pgs.ICVF, 
+                  "m.reg.pgs.SA" = m.reg.pgs.SA, "m.reg.pgs.CT" = m.reg.pgs.CT, "m.reg.pgs.MC" = m.reg.pgs.MC, "m.reg.pgs.ICVF" = m.reg.pgs.ICVF) # list relevant files and assign names
+n_regions = length(data_files[grep("ROI", colnames(data_files[[1]]))]) # Act as j in loop
+
+```
+
+```{r lm model loop for Reg.IMG~PGS, eval=FALSE, include=FALSE}
+
+# For Reg.IMG~PGS (macro-structure)
+for (i in 1:3) {
+  beta_values = matrix(NA, nrow = n_regions)
+  p_values = matrix(NA, nrow = n_regions)
+  t_values = matrix(NA, nrow = n_regions)
+  se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ PGS_scaled + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + 
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef = coef[2,] # Stats around PGS Score
+    beta_values[j,] = coef[1]
+    se_values[j] = coef[2]
+    t_values[j] = coef[3]
+    p_values[j] = coef[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, Beta_Estimates = beta_values, Std.Error = se_values, t_val = t_values, P_val = p_values, R2 = r2_squared)
+    write.table(df, paste0("PGS.", names(data_files[i]), "_updated.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# For Reg.IMG~PGS (micro-structure)
+for (i in 4) {
+  beta_values = matrix(NA, nrow = n_regions)
+  p_values = matrix(NA, nrow = n_regions)
+  t_values = matrix(NA, nrow = n_regions)
+  se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ PGS_scaled + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + 
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef = coef[2,] # Stats around PGS Score
+    beta_values[j,] = coef[1]
+    se_values[j] = coef[2]
+    t_values[j] = coef[3]
+    p_values[j] = coef[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, Beta_Estimates = beta_values, Std.Error = se_values, t_val = t_values, P_val = p_values, R2 = r2_squared)
+    write.table(df, paste0("PGS.", names(data_files[i]), "_updated.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+```
+
+```{r lm model loop for Reg.IMG~PGS + Glb.IMG, eval=FALSE, include=FALSE}
+
+# For Reg.SA~PGS+Glb.SA (macro-structure)
+for (i in 1) {
+  beta_values = matrix(NA, nrow = n_regions)
+  p_values = matrix(NA, nrow = n_regions)
+  t_values = matrix(NA, nrow = n_regions)
+  se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ PGS_scaled + Struct_SA + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + 
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef = coef[2,] # Stats around PGS Score
+    beta_values[j,] = coef[1]
+    se_values[j] = coef[2]
+    t_values[j] = coef[3]
+    p_values[j] = coef[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, Beta_Estimates = beta_values, Std.Error = se_values, t_val = t_values, P_val = p_values, R2 = r2_squared)
+    write.table(df, paste0("PGS.", names(data_files[i]), "_updated_with_Glb.SA.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+
+# For Reg.CT~PGS+Glb.CT (macro-structure)
+for (i in 2) {
+  beta_values = matrix(NA, nrow = n_regions)
+  p_values = matrix(NA, nrow = n_regions)
+  t_values = matrix(NA, nrow = n_regions)
+  se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ PGS_scaled + Struct_CT + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + 
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef = coef[2,] # Stats around PGS Score
+    beta_values[j,] = coef[1]
+    se_values[j] = coef[2]
+    t_values[j] = coef[3]
+    p_values[j] = coef[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, Beta_Estimates = beta_values, Std.Error = se_values, t_val = t_values, P_val = p_values, R2 = r2_squared)
+    write.table(df, paste0("PGS.", names(data_files[i]), "_updated_with_Glb.CT.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+
+# For Reg.MC~PGS+Glb.MC (macro-structure)
+for (i in 3) {
+  beta_values = matrix(NA, nrow = n_regions)
+  p_values = matrix(NA, nrow = n_regions)
+  t_values = matrix(NA, nrow = n_regions)
+  se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ PGS_scaled + Struct_meanCurv + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + 
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef = coef[2,] # Stats around PGS Score
+    beta_values[j,] = coef[1]
+    se_values[j] = coef[2]
+    t_values[j] = coef[3]
+    p_values[j] = coef[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, Beta_Estimates = beta_values, Std.Error = se_values, t_val = t_values, P_val = p_values, R2 = r2_squared)
+    write.table(df, paste0("PGS.", names(data_files[i]), "_updated_with_Glb.MC.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# For Reg.ICVF~PGS+Glb.ICVF (micro-structure)
+for (i in 4) {
+  beta_values = matrix(NA, nrow = n_regions)
+  p_values = matrix(NA, nrow = n_regions)
+  t_values = matrix(NA, nrow = n_regions)
+  se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ PGS_scaled + meanNODDI_ICVF + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + 
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef = coef[2,] # Stats around PGS Score
+    beta_values[j,] = coef[1]
+    se_values[j] = coef[2]
+    t_values[j] = coef[3]
+    p_values[j] = coef[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, Beta_Estimates = beta_values, Std.Error = se_values, t_val = t_values, P_val = p_values, R2 = r2_squared)
+    write.table(df, paste0("PGS.", names(data_files[i]), "_updated_with_Glb.ICVF.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+```
+
+```{r lm model loop for f/m Reg.IMG ~ fPGS/mPGS + Glb.IMG, eval=FALSE, include=FALSE}
+# For female populations 
+# Reg.SA ~ fPGS + Glb.SA (macro-structure)
+for (i in 5) {
+  beta_values = matrix(NA, nrow = n_regions)
+  p_values = matrix(NA, nrow = n_regions)
+  t_values = matrix(NA, nrow = n_regions)
+  se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for(j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ fPGS_scaled + Age + Agesquared + Struct_SA +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef = coef[2,] # Stats around PGS Score
+    beta_values[j,] = coef[1]
+    se_values[j] = coef[2]
+    t_values[j] = coef[3]
+    p_values[j] = coef[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, Beta_Estimates = beta_values, Std.Error = se_values, t_val = t_values, P_val = p_values, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_updated_with_Glb.SA.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# Reg.CT ~ fPGS + Glb.CT (macro-structure)
+for (i in 6) {
+  beta_values = matrix(NA, nrow = n_regions)
+  p_values = matrix(NA, nrow = n_regions)
+  t_values = matrix(NA, nrow = n_regions)
+  se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for(j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ fPGS_scaled + Age + Agesquared + Struct_CT +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef = coef[2,] # Stats around PGS Score
+    beta_values[j,] = coef[1]
+    se_values[j] = coef[2]
+    t_values[j] = coef[3]
+    p_values[j] = coef[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, Beta_Estimates = beta_values, Std.Error = se_values, t_val = t_values, P_val = p_values, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_updated_with_Glb.CT.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# Reg.MC ~ fPGS + Glb.MC (macro-structure)
+for (i in 7) {
+  beta_values = matrix(NA, nrow = n_regions)
+  p_values = matrix(NA, nrow = n_regions)
+  t_values = matrix(NA, nrow = n_regions)
+  se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for(j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ fPGS_scaled + Age + Agesquared + Struct_meanCurv +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef = coef[2,] # Stats around PGS Score
+    beta_values[j,] = coef[1]
+    se_values[j] = coef[2]
+    t_values[j] = coef[3]
+    p_values[j] = coef[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, Beta_Estimates = beta_values, Std.Error = se_values, t_val = t_values, P_val = p_values, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_updated_with_Glb.MC.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# For Reg.ICVF~ fPGS + Glb.ICVF (micro-structure)
+for (i in 8) {
+  beta_values = matrix(NA, nrow = n_regions)
+  p_values = matrix(NA, nrow = n_regions)
+  t_values = matrix(NA, nrow = n_regions)
+  se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ fPGS_scaled +  Age + Agesquared + meanNODDI_ICVF +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef = coef[2,] # Stats around PGS Score
+    beta_values[j,] = coef[1]
+    se_values[j] = coef[2]
+    t_values[j] = coef[3]
+    p_values[j] = coef[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, Beta_Estimates = beta_values, Std.Error = se_values, t_val = t_values, P_val = p_values, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_updated_with_Glb.ICVF.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+
+
+# For male populations
+# Reg.SA ~ mPGS + Glb.SA (macro-structure)
+for (i in 9) {
+  beta_values = matrix(NA, nrow = n_regions)
+  p_values = matrix(NA, nrow = n_regions)
+  t_values = matrix(NA, nrow = n_regions)
+  se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for(j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ mPGS_scaled + Age + Agesquared + Struct_SA +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef = coef[2,] # Stats around PGS Score
+    beta_values[j,] = coef[1]
+    se_values[j] = coef[2]
+    t_values[j] = coef[3]
+    p_values[j] = coef[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, Beta_Estimates = beta_values, Std.Error = se_values, t_val = t_values, P_val = p_values, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_updated_with_Glb.SA.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# Reg.CT ~ mPGS + Glb.CT (macro-structure)
+for (i in 10) {
+  beta_values = matrix(NA, nrow = n_regions)
+  p_values = matrix(NA, nrow = n_regions)
+  t_values = matrix(NA, nrow = n_regions)
+  se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for(j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ mPGS_scaled + Age + Agesquared + Struct_CT +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef = coef[2,] # Stats around PGS Score
+    beta_values[j,] = coef[1]
+    se_values[j] = coef[2]
+    t_values[j] = coef[3]
+    p_values[j] = coef[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, Beta_Estimates = beta_values, Std.Error = se_values, t_val = t_values, P_val = p_values, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_updated_with_Glb.CT.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# Reg.MC ~ mPGS + Glb.MC (macro-structure)
+for (i in 11) {
+  beta_values = matrix(NA, nrow = n_regions)
+  p_values = matrix(NA, nrow = n_regions)
+  t_values = matrix(NA, nrow = n_regions)
+  se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for(j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ mPGS_scaled + Age + Agesquared + Struct_meanCurv +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef = coef[2,] # Stats around PGS Score
+    beta_values[j,] = coef[1]
+    se_values[j] = coef[2]
+    t_values[j] = coef[3]
+    p_values[j] = coef[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, Beta_Estimates = beta_values, Std.Error = se_values, t_val = t_values, P_val = p_values, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_updated_with_Glb.MC.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# For Reg.ICVF~ mPGS + Glb.ICVF (micro-structure)
+for (i in 12) {
+  beta_values = matrix(NA, nrow = n_regions)
+  p_values = matrix(NA, nrow = n_regions)
+  t_values = matrix(NA, nrow = n_regions)
+  se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ mPGS_scaled +  Age + Agesquared + meanNODDI_ICVF +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef = coef[2,] # Stats around PGS Score
+    beta_values[j,] = coef[1]
+    se_values[j] = coef[2]
+    t_values[j] = coef[3]
+    p_values[j] = coef[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, Beta_Estimates = beta_values, Std.Error = se_values, t_val = t_values, P_val = p_values, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_updated_with_Glb.ICVF.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+```
+
+```{r lm model loop for Reg.IMG~PGS + Sex:PGS + Glb.IMG, updated to include both PGS and PGS:SEX coefficients, eval=FALSE, include=FALSE}
+
+# For Reg.SA~PGS + Sex:PGS + Glb.SA (macro-structure)
+for (i in 1) {
+  PGS.beta_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.beta_values = matrix(NA, nrow = n_regions)
+  PGS.p_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.p_values = matrix(NA, nrow = n_regions)
+  PGS.t_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.t_values = matrix(NA, nrow = n_regions)
+  PGS.se_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ PGS_scaled + Struct_SA + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + PGS_scaled * Sex +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef1 = coef[2,] # Stats around PGS
+    PGS.beta_values[j,] = coef1[1]
+    PGS.se_values[j,] = coef1[2]
+    PGS.t_values[j,] = coef1[3]
+    PGS.p_values[j,] = coef1[4]
+    coef2 = coef[24,] # Stats around PGS:SEX
+    PGS.SEX.beta_values[j,] = coef2[1]
+    PGS.SEX.se_values[j] = coef2[2]
+    PGS.SEX.t_values[j] = coef2[3]
+    PGS.SEX.p_values[j] = coef2[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, PGS_Beta_Estimates = PGS.beta_values, PGS_SEX_Beta_Estimates = PGS.SEX.beta_values, 
+                   PGS_Std.Error = PGS.se_values, PGS_SEX_Std.Error = PGS.SEX.se_values, PGS_t_val = PGS.t_values, PGS_SEX_t_val = PGS.SEX.t_values, 
+                   PGS_P_val = PGS.p_values, PGS_SEX_P_val = PGS.SEX.p_values, R2 = r2_squared)
+    write.table(df, paste0("PGS.", names(data_files[i]), "_updated_with_Glb.SA_SEX.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+
+# For Reg.CT~PGS + Sex:PGS + Glb.CT (macro-structure)
+for (i in 2) {
+  PGS.beta_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.beta_values = matrix(NA, nrow = n_regions)
+  PGS.p_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.p_values = matrix(NA, nrow = n_regions)
+  PGS.t_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.t_values = matrix(NA, nrow = n_regions)
+  PGS.se_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ PGS_scaled + Struct_CT + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + PGS_scaled * Sex +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef1 = coef[2,] # Stats around PGS
+    PGS.beta_values[j,] = coef1[1]
+    PGS.se_values[j,] = coef1[2]
+    PGS.t_values[j,] = coef1[3]
+    PGS.p_values[j,] = coef1[4]
+    coef2 = coef[24,] # Stats around PGS:SEX
+    PGS.SEX.beta_values[j,] = coef2[1]
+    PGS.SEX.se_values[j] = coef2[2]
+    PGS.SEX.t_values[j] = coef2[3]
+    PGS.SEX.p_values[j] = coef2[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, PGS_Beta_Estimates = PGS.beta_values, PGS_SEX_Beta_Estimates = PGS.SEX.beta_values, 
+                   PGS_Std.Error = PGS.se_values, PGS_SEX_Std.Error = PGS.SEX.se_values, PGS_t_val = PGS.t_values, PGS_SEX_t_val = PGS.SEX.t_values, 
+                   PGS_P_val = PGS.p_values, PGS_SEX_P_val = PGS.SEX.p_values, R2 = r2_squared)
+    write.table(df, paste0("PGS.", names(data_files[i]), "_updated_with_Glb.CT_SEX.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+
+# For Reg.MC~PGS + Sex:PGS + Glb.MC (macro-structure)
+for (i in 3) {
+  PGS.beta_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.beta_values = matrix(NA, nrow = n_regions)
+  PGS.p_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.p_values = matrix(NA, nrow = n_regions)
+  PGS.t_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.t_values = matrix(NA, nrow = n_regions)
+  PGS.se_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ PGS_scaled + Struct_meanCurv + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + PGS_scaled * Sex +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef1 = coef[2,] # Stats around PGS
+    PGS.beta_values[j,] = coef1[1]
+    PGS.se_values[j,] = coef1[2]
+    PGS.t_values[j,] = coef1[3]
+    PGS.p_values[j,] = coef1[4]
+    coef2 = coef[24,] # Stats around PGS:SEX
+    PGS.SEX.beta_values[j,] = coef2[1]
+    PGS.SEX.se_values[j] = coef2[2]
+    PGS.SEX.t_values[j] = coef2[3]
+    PGS.SEX.p_values[j] = coef2[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, PGS_Beta_Estimates = PGS.beta_values, PGS_SEX_Beta_Estimates = PGS.SEX.beta_values, 
+                   PGS_Std.Error = PGS.se_values, PGS_SEX_Std.Error = PGS.SEX.se_values, PGS_t_val = PGS.t_values, PGS_SEX_t_val = PGS.SEX.t_values, 
+                   PGS_P_val = PGS.p_values, PGS_SEX_P_val = PGS.SEX.p_values, R2 = r2_squared)
+    write.table(df, paste0("PGS.", names(data_files[i]), "_updated_with_Glb.MC_SEX.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# For Reg.IMG~PGS + Sex:PGS + Glb.ICVF (micro-structure)
+for (i in 4) {
+  PGS.beta_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.beta_values = matrix(NA, nrow = n_regions)
+  PGS.p_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.p_values = matrix(NA, nrow = n_regions)
+  PGS.t_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.t_values = matrix(NA, nrow = n_regions)
+  PGS.se_values = matrix(NA, nrow = n_regions)
+  PGS.SEX.se_values = matrix(NA, nrow = n_regions)
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    PGS.model = lm(currentROI ~ PGS_scaled + meanNODDI_ICVF + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + PGS_scaled * Sex +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + batchID, data = temp.data)
+    coef = coefficients(summary(PGS.model))
+    coef1 = coef[2,] # Stats around PGS
+    PGS.beta_values[j,] = coef1[1]
+    PGS.se_values[j,] = coef1[2]
+    PGS.t_values[j,] = coef1[3]
+    PGS.p_values[j,] = coef1[4]
+    coef2 = coef[23,] # Stats around PGS:SEX
+    PGS.SEX.beta_values[j,] = coef2[1]
+    PGS.SEX.se_values[j] = coef2[2]
+    PGS.SEX.t_values[j] = coef2[3]
+    PGS.SEX.p_values[j] = coef2[4]
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(PGS.model)$adj.r.squared
+    df= data.frame(region, PGS_Beta_Estimates = PGS.beta_values, PGS_SEX_Beta_Estimates = PGS.SEX.beta_values, 
+                   PGS_Std.Error = PGS.se_values, PGS_SEX_Std.Error = PGS.SEX.se_values, PGS_t_val = PGS.t_values, PGS_SEX_t_val = PGS.SEX.t_values, 
+                   PGS_P_val = PGS.p_values, PGS_SEX_P_val = PGS.SEX.p_values, R2 = r2_squared)
+    write.table(df, paste0("PGS.", names(data_files[i]), "_updated_with_Glb.ICVF_SEX.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+```
+
+# Regional Inc.R2 model loop, calculation and visualisation
+```{r lm model loop for Reg.IMG~COVAR for Inc.R2 calculation, eval=FALSE, include=FALSE}
+
+# For Reg.IMG~PGS (macro-structure)
+for (i in 1:3) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + 
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), ".txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# For Reg.IMG~PGS (micro-structure)
+for (i in 4) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + 
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), ".txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+```
+
+```{r lm model loop for Reg.IMG~Glb.IMG+COVAR for Inc.R2 calculation, eval=FALSE, include=FALSE}
+
+# For Reg.SA~Glb.SA+COVAR (macro-structure)
+for (i in 1) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Struct_SA + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + 
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.SA.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+
+# For Reg.CT~Glb.CT+COVAR (macro-structure)
+for (i in 2) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Struct_CT + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + 
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.CT.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+
+# For Reg.MC~Glb.MC+COVAR (macro-structure)
+for (i in 3) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Struct_meanCurv + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + 
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.MC.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# For Reg.ICVF~PGS+Glb.ICVF (micro-structure)
+for (i in 4) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ meanNODDI_ICVF + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + 
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.ICVF.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+```
+
+```{r lm model loop for f/m Reg.IMG ~ f/m Glb.IMG+COVAR for Inc.R2 calculation, eval=FALSE, include=FALSE}
+# For female populations 
+# Reg.SA ~ fPGS + Glb.SA (macro-structure)
+for (i in 5) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for(j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Age + Agesquared + Struct_SA +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.SA.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# Reg.CT ~ fPGS + Glb.CT (macro-structure)
+for (i in 6) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for(j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Age + Agesquared + Struct_CT +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.CT.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# Reg.MC ~ fPGS + Glb.MC (macro-structure)
+for (i in 7) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for(j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Age + Agesquared + Struct_meanCurv +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.MC.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# For Reg.ICVF~ fPGS + Glb.ICVF (micro-structure)
+for (i in 8) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Age + Agesquared + meanNODDI_ICVF +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.ICVF.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+
+
+# For male populations
+# Reg.SA ~ mPGS + Glb.SA (macro-structure)
+for (i in 9) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for(j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Age + Agesquared + Struct_SA +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.SA.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# Reg.CT ~ mPGS + Glb.CT (macro-structure)
+for (i in 10) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for(j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Age + Agesquared + Struct_CT +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.CT.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# Reg.MC ~ mPGS + Glb.MC (macro-structure)
+for (i in 11) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for(j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Age + Agesquared + Struct_meanCurv +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.MC.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# For Reg.ICVF~ mPGS + Glb.ICVF (micro-structure)
+for (i in 12) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Age + Agesquared + meanNODDI_ICVF +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.ICVF.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+```
+
+```{r lm model loop for Reg.IMG~Sex:PGS + Glb.IMG+COVAR for Inc.R2 PGS calculation, eval=FALSE, include=FALSE}
+
+# For Reg.SA~Sex:PGS + Glb.SA (macro-structure)
+for (i in 1) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Struct_SA + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + PGS_scaled * Sex +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.SA_SEX.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+
+# For Reg.CT~Sex:PGS + Glb.CT (macro-structure)
+for (i in 2) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Struct_CT + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + PGS_scaled * Sex +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.CT_SEX.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+
+# For Reg.MC~PGS + Sex:PGS + Glb.MC (macro-structure)
+for (i in 3) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ Struct_meanCurv + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + PGS_scaled * Sex +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + T1T2 + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.MC_SEX.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+# For Reg.IMG~PGS + Sex:PGS + Glb.ICVF (micro-structure)
+for (i in 4) {
+  r2_squared = matrix(NA, nrow = n_regions)
+  region = matrix(NA, nrow = n_regions)
+  for (j in 1:n_regions) {
+    setwd(here("Results/"))
+    temp.data <- data_files[[i]]
+    reg.list <- colnames(temp.data)[grep("ROI", colnames(temp.data))] # list of regions
+    currentROI <- temp.data[,which(names(temp.data)==reg.list[j])]
+    temp.data = cbind(temp.data, currentROI)
+    print(paste("working on:", names(data_files[i]), "column", reg.list[j]))
+    IMG.model = lm(currentROI ~ meanNODDI_ICVF + Sex + Age + Agesquared + Sex * Age + Sex * Agesquared + PGS_scaled * Sex +
+                        X22009.0.1 + X22009.0.2 + X22009.0.3 + X22009.0.4 + X22009.0.5 + X22009.0.6 + X22009.0.7 + X22009.0.8 + X22009.0.9 + X22009.0.10 + 
+                        Scan.Site + eulerleftplusright + fd + batchID, data = temp.data)
+    region[j] = reg.list[j]
+    r2_squared[j] = summary(IMG.model)$adj.r.squared
+    df= data.frame(region, R2 = r2_squared)
+    write.table(df, paste0(names(data_files[i]), "_with_Glb.ICVF_SEX.txt"), sep = "\t", row.names = F, col.names = T)
+  }
+}
+
+```
+
+# Regional Inc.R2 Calculation and calculation 
+```{r read-in regional generated data for generating Inc.R2}
+# For loop to read in all with PGS and without PGS/fPGS/mPGS/PGS:SEX models
+R2.reg.list <- paste0(here("Results/", list.files(path = here("Results/"), pattern = "*_with_Glb.*"))) # Grab file directories
+R2.reg.list2 <- c(here("Results//reg.pgs.SA.txt"), here("Results//reg.pgs.CT.txt"), here("Results//reg.pgs.MC.txt"), here("Results//reg.pgs.ICVF.txt"))
+R2.reg.list3 <- paste0(here("Results/", list.files(path = here("Results/"), pattern = "*_updated.txt")))
+R2.reg.list <- c(R2.reg.list,R2.reg.list2,R2.reg.list3)
+
+for (i in 1:length(R2.reg.list)) {
+  df = fread(R2.reg.list[i])
+  df_name = sub("C:/Users/yg330/OneDrive - University of Cambridge/Documents/Projects/pgs_img/Results//", "" , R2.reg.list[i])
+  df_name = sub(".txt", "", df_name)
+  assign(df_name, df)
+}
+```
+
+```{r Calculating Inc.R2 for PGS and PGS:SEX lm models}
+
+# For Reg.IMG~PGS
+PGS.reg.pgs.SA_updated$Inc.R2 <- PGS.reg.pgs.SA_updated$R2 - reg.pgs.SA$R2
+PGS.reg.pgs.CT_updated$Inc.R2 <- PGS.reg.pgs.CT_updated$R2 - reg.pgs.CT$R2
+PGS.reg.pgs.MC_updated$Inc.R2 <- PGS.reg.pgs.MC_updated$R2 - reg.pgs.MC$R2
+PGS.reg.pgs.ICVF_updated$Inc.R2 <- PGS.reg.pgs.ICVF_updated$R2 - reg.pgs.ICVF$R2
+
+summary(PGS.reg.pgs.SA_updated$Inc.R2)
+vis.IncR2.SA <- ggplot(PGS.reg.pgs.SA_updated, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+vis.IncR2.SA
+
+summary(PGS.reg.pgs.CT_updated$Inc.R2)
+vis.IncR2.CT <- ggplot(PGS.reg.pgs.CT_updated, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+vis.IncR2.CT
+
+summary(PGS.reg.pgs.MC_updated$Inc.R2)
+vis.IncR2.MC <- ggplot(PGS.reg.pgs.MC_updated, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+vis.IncR2.MC
+
+summary(PGS.reg.pgs.ICVF_updated$Inc.R2)
+vis.IncR2.ICVF <- ggplot(PGS.reg.pgs.ICVF_updated, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+vis.IncR2.ICVF
+
+
+# For Reg.IMG~PGS+Glb.IMG - Reg.IMG~Glb.IMG
+PGS.reg.pgs.SA_updated_with_Glb.SA$Inc.R2 <- PGS.reg.pgs.SA_updated_with_Glb.SA$R2 - reg.pgs.SA_with_Glb.SA$R2
+PGS.reg.pgs.CT_updated_with_Glb.CT$Inc.R2 <- PGS.reg.pgs.CT_updated_with_Glb.CT$R2 - reg.pgs.CT_with_Glb.CT$R2
+PGS.reg.pgs.MC_updated_with_Glb.MC$Inc.R2 <- PGS.reg.pgs.MC_updated_with_Glb.MC$R2 - reg.pgs.MC_with_Glb.MC$R2
+PGS.reg.pgs.ICVF_updated_with_Glb.ICVF$Inc.R2 <- PGS.reg.pgs.ICVF_updated_with_Glb.ICVF$R2 - reg.pgs.ICVF_with_Glb.ICVF$R2
+
+summary(PGS.reg.pgs.SA_updated_with_Glb.SA$Inc.R2)
+vis.IncR2.SA.Glb <- ggplot(PGS.reg.pgs.SA_updated_with_Glb.SA, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+vis.IncR2.SA.Glb
+
+summary(PGS.reg.pgs.CT_updated_with_Glb.CT$Inc.R2)
+vis.IncR2.CT.Glb <- ggplot(PGS.reg.pgs.CT_updated_with_Glb.CT, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+vis.IncR2.CT.Glb
+
+summary(PGS.reg.pgs.MC_updated_with_Glb.MC$Inc.R2)
+vis.IncR2.MC.Glb <- ggplot(PGS.reg.pgs.MC_updated_with_Glb.MC, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+vis.IncR2.MC.Glb
+
+summary(PGS.reg.pgs.ICVF_updated_with_Glb.ICVF$Inc.R2)
+vis.IncR2.ICVF.Glb <- ggplot(PGS.reg.pgs.ICVF_updated_with_Glb.ICVF, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+vis.IncR2.ICVF.Glb
+
+# For fReg.IMG~fPGS+fGlb.IMG - fReg.IMG~fGlb.IMG
+f.reg.pgs.SA_updated_with_Glb.SA$Inc.R2 <- f.reg.pgs.SA_updated_with_Glb.SA$R2 - f.reg.pgs.SA_with_Glb.SA$R2
+f.reg.pgs.CT_updated_with_Glb.CT$Inc.R2 <- f.reg.pgs.CT_updated_with_Glb.CT$R2 - f.reg.pgs.CT_with_Glb.CT$R2
+f.reg.pgs.MC_updated_with_Glb.MC$Inc.R2 <- f.reg.pgs.MC_updated_with_Glb.MC$R2 - f.reg.pgs.MC_with_Glb.MC$R2
+f.reg.pgs.ICVF_updated_with_Glb.ICVF$Inc.R2 <- f.reg.pgs.ICVF_updated_with_Glb.ICVF$R2 - f.reg.pgs.ICVF_with_Glb.ICVF$R2
+
+summary(f.reg.pgs.SA_updated_with_Glb.SA$Inc.R2)
+f.vis.IncR2.SA.Glb <- ggplot(f.reg.pgs.SA_updated_with_Glb.SA, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+f.vis.IncR2.SA.Glb
+
+summary(f.reg.pgs.CT_updated_with_Glb.CT$Inc.R2)
+f.vis.IncR2.CT.Glb <- ggplot(f.reg.pgs.CT_updated_with_Glb.CT, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+f.vis.IncR2.CT.Glb
+
+summary(f.reg.pgs.MC_updated_with_Glb.MC$Inc.R2)
+f.vis.IncR2.MC.Glb <- ggplot(f.reg.pgs.MC_updated_with_Glb.MC, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+f.vis.IncR2.MC.Glb
+
+summary(f.reg.pgs.ICVF_updated_with_Glb.ICVF$Inc.R2)
+f.vis.IncR2.ICVF.Glb <- ggplot(f.reg.pgs.ICVF_updated_with_Glb.ICVF, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+f.vis.IncR2.ICVF.Glb
+
+# For mReg.IMG~mPGS+mGlb.IMG
+m.reg.pgs.SA_updated_with_Glb.SA$Inc.R2 <- m.reg.pgs.SA_updated_with_Glb.SA$R2 - m.reg.pgs.SA_with_Glb.SA$R2
+m.reg.pgs.CT_updated_with_Glb.CT$Inc.R2 <- m.reg.pgs.CT_updated_with_Glb.CT$R2 - m.reg.pgs.CT_with_Glb.CT$R2
+m.reg.pgs.MC_updated_with_Glb.MC$Inc.R2 <- m.reg.pgs.MC_updated_with_Glb.MC$R2 - m.reg.pgs.MC_with_Glb.MC$R2
+m.reg.pgs.ICVF_updated_with_Glb.ICVF$Inc.R2 <- m.reg.pgs.ICVF_updated_with_Glb.ICVF$R2 - m.reg.pgs.ICVF_with_Glb.ICVF$R2
+
+summary(m.reg.pgs.SA_updated_with_Glb.SA$Inc.R2)
+m.vis.IncR2.SA.Glb <- ggplot(m.reg.pgs.SA_updated_with_Glb.SA, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+m.vis.IncR2.SA.Glb
+
+summary(m.reg.pgs.CT_updated_with_Glb.CT$Inc.R2)
+m.vis.IncR2.CT.Glb <- ggplot(m.reg.pgs.CT_updated_with_Glb.CT, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+m.vis.IncR2.CT.Glb
+
+summary(m.reg.pgs.MC_updated_with_Glb.MC$Inc.R2)
+m.vis.IncR2.MC.Glb <- ggplot(m.reg.pgs.MC_updated_with_Glb.MC, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+m.vis.IncR2.MC.Glb
+
+summary(m.reg.pgs.ICVF_updated_with_Glb.ICVF$Inc.R2)
+m.vis.IncR2.ICVF.Glb <- ggplot(m.reg.pgs.ICVF_updated_with_Glb.ICVF, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+m.vis.IncR2.ICVF.Glb
+
+# For PGS:SEX in Reg.IMG~PGS:SEX
+PGS.reg.pgs.SA_updated_with_Glb.SA_SEX$Inc.R2.SEX <- PGS.reg.pgs.SA_updated_with_Glb.SA_SEX$R2 - PGS.reg.pgs.SA_updated_with_Glb.SA$R2
+PGS.reg.pgs.CT_updated_with_Glb.CT_SEX$Inc.R2.SEX <- PGS.reg.pgs.CT_updated_with_Glb.CT_SEX$R2 - PGS.reg.pgs.CT_updated_with_Glb.CT$R2
+PGS.reg.pgs.MC_updated_with_Glb.MC_SEX$Inc.R2.SEX <- PGS.reg.pgs.MC_updated_with_Glb.MC_SEX$R2 - PGS.reg.pgs.MC_updated_with_Glb.MC$R2
+PGS.reg.pgs.ICVF_updated_with_Glb.ICVF_SEX$Inc.R2.SEX <- PGS.reg.pgs.ICVF_updated_with_Glb.ICVF_SEX$R2 - PGS.reg.pgs.ICVF_updated_with_Glb.ICVF$R2
+
+summary(PGS.reg.pgs.SA_updated_with_Glb.SA_SEX$Inc.R2.SEX)
+vis.IncR2.SA.Glb.SEXPGS <- ggplot(PGS.reg.pgs.SA_updated_with_Glb.SA_SEX, aes(x=region, y=Inc.R2.SEX)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+vis.IncR2.SA.Glb.SEXPGS
+
+summary(PGS.reg.pgs.CT_updated_with_Glb.CT_SEX$Inc.R2.SEX)
+vis.IncR2.CT.Glb.SEXPGS <- ggplot(PGS.reg.pgs.CT_updated_with_Glb.CT_SEX, aes(x=region, y=Inc.R2.SEX)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+vis.IncR2.CT.Glb.SEXPGS
+
+summary(PGS.reg.pgs.MC_updated_with_Glb.MC_SEX$Inc.R2.SEX)
+vis.IncR2.MC.Glb.SEXPGS <- ggplot(PGS.reg.pgs.MC_updated_with_Glb.MC_SEX, aes(x=region, y=Inc.R2.SEX)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+vis.IncR2.MC.Glb.SEXPGS
+
+summary(PGS.reg.pgs.ICVF_updated_with_Glb.ICVF_SEX$Inc.R2.SEX)
+vis.IncR2.ICVF.Glb.SEXPGS <- ggplot(PGS.reg.pgs.ICVF_updated_with_Glb.ICVF_SEX, aes(x=region, y=Inc.R2.SEX)) + geom_bar(stat="identity") + ylim(-0.0001, 0.0006)
+vis.IncR2.ICVF.Glb.SEXPGS
+
+# For PGS in Reg.IMG~PGS:SEX
+PGS.reg.pgs.SA_updated_with_Glb.SA_SEX$Inc.R2 <- PGS.reg.pgs.SA_updated_with_Glb.SA_SEX$R2 - reg.pgs.SA_with_Glb.SA_SEX$R2
+PGS.reg.pgs.CT_updated_with_Glb.CT_SEX$Inc.R2 <- PGS.reg.pgs.CT_updated_with_Glb.CT_SEX$R2 - reg.pgs.CT_with_Glb.CT_SEX$R2
+PGS.reg.pgs.MC_updated_with_Glb.MC_SEX$Inc.R2 <- PGS.reg.pgs.MC_updated_with_Glb.MC_SEX$R2 - reg.pgs.MC_with_Glb.MC_SEX$R2
+PGS.reg.pgs.ICVF_updated_with_Glb.ICVF_SEX$Inc.R2 <- PGS.reg.pgs.ICVF_updated_with_Glb.ICVF_SEX$R2 - reg.pgs.ICVF_with_Glb.ICVF_SEX$R2
+
+summary(PGS.reg.pgs.SA_updated_with_Glb.SA_SEX$Inc.R2)
+vis.IncR2.SA.Glb.SEX <- ggplot(PGS.reg.pgs.SA_updated_with_Glb.SA_SEX, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity")
+vis.IncR2.SA.Glb.SEX
+
+summary(PGS.reg.pgs.CT_updated_with_Glb.CT_SEX$Inc.R2)
+vis.IncR2.CT.Glb.SEX <- ggplot(PGS.reg.pgs.CT_updated_with_Glb.CT_SEX, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity")
+vis.IncR2.CT.Glb.SEX
+
+summary(PGS.reg.pgs.MC_updated_with_Glb.MC_SEX$Inc.R2)
+vis.IncR2.MC.Glb.SEX <- ggplot(PGS.reg.pgs.MC_updated_with_Glb.MC_SEX, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity")
+vis.IncR2.MC.Glb.SEX
+
+summary(PGS.reg.pgs.ICVF_updated_with_Glb.ICVF_SEX$Inc.R2)
+vis.IncR2.ICVF.Glb.SEX <- ggplot(PGS.reg.pgs.ICVF_updated_with_Glb.ICVF_SEX, aes(x=region, y=Inc.R2)) + geom_bar(stat="identity")
+vis.IncR2.ICVF.Glb.SEX
+
+```
+
+# Regional Data Visualisation
+```{r read-in regional generated data}
+# For loop to read in all tables
+vis.reg.list <- R2.reg.list
+vis.reg.list <- gsub("C:/Users/yg330/OneDrive - University of Cambridge/Documents/Projects/pgs_img/Results//", "" , vis.reg.list)
+vis.reg.list <- gsub(".txt", "", vis.reg.list)
+vis.reg.list <- str_subset(vis.reg.list, "_updated")
+
+vis.df = lapply(vis.reg.list, get) # Create list of data sets
+names(vis.df) = vis.reg.list # Assign name for the list of data sets for looping
+
+vis.df.SEX <- c(vis.df[grep("SEX", vis.df)])
+vis.df <- vis.df[grepl("SEX", vis.df) == "FALSE"]
+```
+
+```{r visualisation dataframe preperation}
+# For and ifelse loop to format region names to Glasser standard and to add additional labels on every data sets at once
+
+for (i in 1:length(vis.df)) {
+  print(paste0("Currently working on ", names(vis.df[i])))
+  vis.df[[i]]$region <- gsub("_ROI","",as.character(vis.df[[i]]$region)) # Remove _ROI to fit Glassar format
+  vis.df[[i]]$region <- gsub("X","",as.character(vis.df[[i]]$region)) # Remove X to fit format
+  vis.df[[i]]$region <- gsub("ROI","L",as.character(vis.df[[i]]$region)) # Replace ROI with L to fit format
+  vis.df[[i]]$region <- gsub("\\.","-",as.character(vis.df[[i]]$region)) # Replace . as - to fit format
+  vis.df[[i]]$p_adj <- p.adjust(vis.df[[i]]$P_val, method = "fdr", n = 180) # multiple testing correction, as we only got 180 rows as regions, doesn't need to specify 180 for the correction.
+  vis.df[[i]]$Sig.adj.P <- ifelse(vis.df[[i]]$p_adj <= 0.05, "Sig", "Not Sig") # significance label
+  if(grepl("SA", names(vis.df[i]))){
+    print("Dataset title has SA, adding labels")
+    vis.df[[i]] <- vis.df[[i]] %>% mutate(Label = "Surface Area")
+    vis.df[[i]] <- vis.df[[i]] %>% mutate(Class = "Macrostructure")
+  } else if (grepl("CT", names(vis.df[i]))) {
+    print("Dataset title has CT, adding labels")
+    vis.df[[i]] <- vis.df[[i]] %>% mutate(Label = "Cortical Thickness")
+    vis.df[[i]] <- vis.df[[i]] %>% mutate(Class = "Macrostructure")
+  } else if (grepl("MC", names(vis.df[i]))) {
+    print("Dataset title has MC, adding labels")
+    vis.df[[i]] <- vis.df[[i]] %>% mutate(Label = "Mean Curvature")
+    vis.df[[i]] <- vis.df[[i]] %>% mutate(Class = "Macrostructure")
+  } else if (grepl("ICVF", names(vis.df[i]))) {
+    print("Dataset title has ICVF, adding labels")
+    vis.df[[i]] <- vis.df[[i]] %>% mutate(Label = "Intracellular Volume Fraction")
+    vis.df[[i]] <- vis.df[[i]] %>% mutate(Class = "Microstructure")
+  } else {
+    print("Error, couldn't find target phenotype, check dataframe name")
+  }
+}
+
+# For PGS:SEX Model, getting p_val for both PGS and PGS:SEX
+for (i in 1:length(vis.df.SEX)) {
+  print(paste0("Currently working on ", names(vis.df.SEX[i])))
+  vis.df.SEX[[i]]$region <- gsub("_ROI","",as.character(vis.df.SEX[[i]]$region)) # Remove _ROI to fit Glassar format
+  vis.df.SEX[[i]]$region <- gsub("X","",as.character(vis.df.SEX[[i]]$region)) # Remove X to fit format
+  vis.df.SEX[[i]]$region <- gsub("ROI","L",as.character(vis.df.SEX[[i]]$region)) # Replace ROI with L to fit format
+  vis.df.SEX[[i]]$region <- gsub("\\.","-",as.character(vis.df.SEX[[i]]$region)) # Replace . as - to fit format
+  
+  vis.df.SEX[[i]]$PGS.p_adj <- p.adjust(vis.df.SEX[[i]]$PGS_P_val, method = "fdr", n = 180) # multiple testing correction, as we only got 180 rows as regions, doesn't need to specify 180 for the correction.
+  vis.df.SEX[[i]]$PGS.Sig.adj.P <- ifelse(vis.df.SEX[[i]]$PGS.p_adj <= 0.05, "Sig", "Not Sig") # significance label
+  
+  vis.df.SEX[[i]]$PGS.SEX.p_adj <- p.adjust(vis.df.SEX[[i]]$PGS_SEX_P_val, method = "fdr", n=180)
+  vis.df.SEX[[i]]$PGS.SEX.Sig.adj.P <- ifelse(vis.df.SEX[[i]]$PGS.SEX.p_adj <= 0.05, "Sig", "Not Sig") 
+    if(grepl("SA", names(vis.df.SEX[i]))){
+    print("Dataset title has SA, adding labels")
+    vis.df.SEX[[i]] <- vis.df.SEX[[i]] %>% mutate(Label = "Surface Area")
+    vis.df.SEX[[i]] <- vis.df.SEX[[i]] %>% mutate(Class = "Macrostructure")
+  } else if (grepl("CT", names(vis.df.SEX[i]))) {
+    print("Dataset title has CT, adding labels")
+    vis.df.SEX[[i]] <- vis.df.SEX[[i]] %>% mutate(Label = "Cortical Thickness")
+    vis.df.SEX[[i]] <- vis.df.SEX[[i]] %>% mutate(Class = "Macrostructure")
+  } else if (grepl("MC", names(vis.df.SEX[i]))) {
+    print("Dataset title has MC, adding labels")
+    vis.df.SEX[[i]] <- vis.df.SEX[[i]] %>% mutate(Label = "Mean Curvature")
+    vis.df.SEX[[i]] <- vis.df.SEX[[i]] %>% mutate(Class = "Macrostructure")
+  } else if (grepl("ICVF", names(vis.df.SEX[i]))) {
+    print("Dataset title has ICVF, adding labels")
+    vis.df.SEX[[i]] <- vis.df.SEX[[i]] %>% mutate(Label = "Intracellular Volume Fraction")
+    vis.df.SEX[[i]] <- vis.df.SEX[[i]] %>% mutate(Class = "Microstructure")
+  } else {
+    print("Error, couldn't find target phenotype, check dataframe name")
+  }
+}
+
+# Generate Master Tables
+master.f.reg.vis <- c(vis.df[1:4]) # double checked for correctness
+master.m.reg.vis <- c(vis.df[5:8])
+master.reg.vis.glb <- c(vis.df[c(9:12)])
+master.reg.vis <- c(vis.df[c(13:16)])
+
+
+master.f.reg.vis <- master.f.reg.vis %>% reduce(full_join)
+master.m.reg.vis <- master.m.reg.vis %>% reduce(full_join)
+master.reg.vis <- master.reg.vis %>% reduce(full_join)
+master.reg.vis.glb <- master.reg.vis.glb %>% reduce(full_join)
+master.reg.vis.glb.Sex <- vis.df.SEX %>% reduce(full_join)
+
+```
+
+```{r Visualisation for Reg.IMG~PGS, Reg.IMG~PGS+Glb.IMG, Reg.IMG~PGS:SEX, fReg.IMG~fPGS+fGlb.IMG, mReg.IMG~mPGS+mGlb.IMG}
+print(master.reg.vis[master.reg.vis$Sig.adj.P == "Sig"])
+print(master.reg.vis.glb[master.reg.vis.glb$Sig.adj.P == "Sig"])
+print(master.reg.vis.glb.Sex[master.reg.vis.glb.Sex$PGS.Sig.adj.P == "Sig"])
+print(master.reg.vis.glb.Sex[master.reg.vis.glb.Sex$PGS.SEX.Sig.adj.P == "Sig"])
+print(master.f.reg.vis[master.f.reg.vis$Sig.adj.P == "Sig"])
+print(master.m.reg.vis[master.m.reg.vis$Sig.adj.P == "Sig"])
+
+sig.list.excel.export <- list("Eqn2" = data.frame(master.reg.vis[master.reg.vis$Sig.adj.P == "Sig"]), "Eqn3" = data.frame(master.reg.vis.glb[master.reg.vis.glb$Sig.adj.P == "Sig"]), 
+                          "Eqn5" = data.frame(master.reg.vis.glb.Sex[master.reg.vis.glb.Sex$PGS.Sig.adj.P == "Sig"]))
+write.xlsx(sig.list.excel.export, file = here("Report/Sig_regions_UKB.xlsx")) 
+
+
+# Inc.R2 range for ICVF and SA
+summary(master.reg.vis$Inc.R2[master.reg.vis$Sig.adj.P == "Sig" & master.reg.vis$Label == "Surface Area"]) # For surface Area
+summary(master.reg.vis$Inc.R2[master.reg.vis$Sig.adj.P == "Sig" & master.reg.vis$Label == "Intracellular Volume Fraction"]) # For ICVF
+
+# For Reg.IMG~PGS
+reg.vis <- master.reg.vis %>% group_by(Label) %>% 
+  ggseg(mapping=aes(fill=(Beta_Estimates), col = Sig.adj.P), atlas = "glasser", 
+        hemisphere = "right", position="stacked", size= 0.1) +
+  scale_fill_gradient2(low = "blue", mid="white",high="orange") +
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  facet_wrap(~Label) + theme_minimal() + labs(fill = "PGS Beta Estimates") +
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) +
+  ggtitle("Equation 2: Reg.IMG~PGS+Covar", subtitle = "based on PGS p_val")
+reg.vis + guides(col = FALSE)
+
+# For Reg.IMG~PGS+Glb.IMG
+reg.vis.glb <- master.reg.vis.glb %>% group_by(Label) %>% 
+  ggseg(mapping=aes(fill=(Beta_Estimates), col = Sig.adj.P), atlas = "glasser", 
+        hemisphere = "right", position="stacked", size= 0.1) +
+  scale_fill_gradient2(low = "blue", mid="white",high="orange") +
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  facet_wrap(~Label) + theme_minimal() + labs(fill = "PGS Beta Estimates") +
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) +
+  ggtitle("Equation 3: Reg.IMG~PGS+Glb.IMG+Covar", subtitle = "based on PGS p_val")
+reg.vis.glb + guides(col = FALSE)
+
+# For Reg.IMG~PGS:SEX
+reg.vis.glb.Sex <- master.reg.vis.glb.Sex %>% group_by(Label) %>% 
+  ggseg(mapping=aes(fill=(PGS_Beta_Estimates), col = PGS.Sig.adj.P), atlas = "glasser", 
+        hemisphere = "right", position="stacked", size= 0.1) +
+  scale_fill_gradient2(low = "blue", mid="white",high="orange") +
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  facet_wrap(~Label) + theme_minimal() + labs(fill = "PGS Beta Estimates") +
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) +
+  ggtitle("Equation 5: Reg.IMG~PGS+PGS:SEX+Glb.IMG+Covar", subtitle = "based on PGS p_val")
+reg.vis.glb.Sex + guides(col = FALSE)
+
+reg.vis.glb.Sex <- master.reg.vis.glb.Sex %>% group_by(Label) %>% 
+  ggseg(mapping=aes(fill=(PGS_SEX_Beta_Estimates), col = PGS.SEX.Sig.adj.P), atlas = "glasser", 
+        hemisphere = "right", position="stacked", size= 0.1) +
+  scale_fill_gradient2(low = "blue", mid="white",high="orange") +
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  facet_wrap(~Label) + theme_minimal() + labs(fill = "PGS:SEX Beta Estimates") +
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) +
+  ggtitle("Equation 5: Reg.IMG~PGS+PGS:SEX+Glb.IMG+Covar", subtitle = "based on PGS:SEX p_val")
+reg.vis.glb.Sex + guides(col = FALSE)
+
+# For fReg.IMG~fPGS+fGlb.IMG
+f.reg.vis <- master.f.reg.vis %>% group_by(Label) %>% 
+  ggseg(mapping=aes(fill=(Beta_Estimates), col = Sig.adj.P), atlas = "glasser", 
+        hemisphere = "right", position="stacked", size= 0.1) +
+  scale_fill_gradient2(low = "blue", mid="white",high="orange") +
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  facet_wrap(~Label) + theme_minimal() + labs(fill = "PGS Beta Estimates") +
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) +
+  ggtitle("Equation 7: fReg.IMG~fPGS+fGlb.IMG+Covar", subtitle = "based on PGS p_val")
+f.reg.vis + guides(col = FALSE)
+
+# For mReg.IMG~mPGS+mGlb.IMG
+m.reg.vis <- master.m.reg.vis %>% group_by(Label) %>% 
+  ggseg(mapping=aes(fill=(Beta_Estimates), col = Sig.adj.P), atlas = "glasser", 
+        hemisphere = "right", position="stacked", size= 0.1) +
+  scale_fill_gradient2(low = "blue", mid="white",high="orange") +
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  facet_wrap(~Label) + theme_minimal() + labs(fill = "PGS Beta Estimates") +
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) +
+  ggtitle("Equation 9: mReg.IMG~mPGS+mGlb.IMG+Covar", subtitle = "based on PGS p_val")
+m.reg.vis + guides(col = FALSE)
+
+```
+
+```{r visualisation for significant MRI-derived phenotypes and regions}
+
+# For Reg.IMG~PGS
+master.reg.vis.sig <- master.reg.vis[master.reg.vis$Label %in% c('Surface Area', 'Intracellular Volume Fraction'), ]
+
+reg.vis.sig <- master.reg.vis.sig %>% group_by(Label) %>% 
+  ggseg(mapping=aes(fill=(Beta_Estimates), col = Sig.adj.P), atlas = "glasser", 
+        hemisphere = "right", position="stacked", size= 0.1) +
+  scale_fill_gradient2(low = "blue", mid="white",high="orange") +
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  facet_wrap(~Label) + theme_minimal() + labs(fill = "PGS Beta Estimates") +
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) +
+  ggtitle("Equation 2: Reg.IMG~PGS+Covar", subtitle = "based on PGS p_val")
+reg.vis.sig + guides(col = FALSE)
+
+```
+
+# Regional Correlation Analysis between Sex by IMG Phenotypes
+```{r Correlation between Unstratified male and females}
+# Female and male were rescaled after sex stratification, therefore will not show inherent sex differences, but sex specific effect...
+# PGS beta_estimates in f/m img~ f/m pgs + f/m Glb.img lm model
+# For SA
+SA.cor <- cor.test(master.f.reg.vis[Label == "Surface Area"]$Beta_Estimates, master.m.reg.vis[Label == "Surface Area"]$Beta_Estimates, method = "pearson")
+SA.cor
+
+# For CT
+CT.cor <- cor.test(master.f.reg.vis[Label == "Cortical Thickness"]$Beta_Estimates, master.m.reg.vis[Label == "Cortical Thickness"]$Beta_Estimates, method = "pearson")
+CT.cor
+
+# For MC
+MC.cor <- cor.test(master.f.reg.vis[Label == "Mean Curvature"]$Beta_Estimates, master.m.reg.vis[Label == "Mean Curvature"]$Beta_Estimates, method = "pearson")
+MC.cor
+
+# For ICVF
+ICVF.cor <- cor.test(master.f.reg.vis[Label == "Intracellular Volume Fraction"]$Beta_Estimates, master.m.reg.vis[Label == "Intracellular Volume Fraction"]$Beta_Estimates, method = "pearson")
+ICVF.cor
+```

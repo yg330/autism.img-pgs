@@ -1,0 +1,171 @@
+---
+title: "Across cohort Analysis"
+author: "Yuanjun Gu"
+date: "2023-05-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse) # General code writing
+library(here) # For reproducibility, remember open new project at the pgs_img folder
+library(jtools) # For automation of summarizing lm models
+library(huxtable, include.only = 'huxreg') # dependency of export_summ() in jtools package
+library(Hmisc, include.only = 'rcorr') # For correlation matrix generation
+library(corrplot) # For correlation matrix plot
+library(data.table, include.only = "fread") # For fast data read-in
+library(ggseg) # For brain plot
+library(ggsegGlasser) # For Glasser segmentation specifically, note: ggsegGlasser is not avaliable for this version of R[4.3.0], but I've downloaded through ggseg r-universe frollowing their github recommendation.
+library(car, include.only = 'vif') # for checking colinearity
+library(patchwork) # For adding plots together
+library(ggpubr) # For generating publication ready graphs
+```
+
+```{r UKB, echo=FALSE}
+
+UKBasd <- read.csv(here("PGS/UKB/Autism_grove_ipsychonly2020_PRSCS.txt"), header = T, sep = " ") # unstratified
+fUKBasd <- read.csv(here("PGS/UKB/Autism_grove_ipsychonly2020_females_PRSCS.txt"), header = T, sep = " ") # female
+mUKBasd <- read.csv(here("PGS/UKB/Autism_grove_ipsychonly2020_males_PRSCS.txt"), header = T, sep = " ") # male
+
+struc_pheno <- read.csv(here("QCd_pheno_covar/UKB/Structural_WB.txt"), header = T, sep = " ") # structural phenotypes
+scale_pheno <- read.csv(here("QCd_pheno_covar/UKB/WMpheno_scaled.txt"), header = T, sep = " ") # diffusion phenotypes
+
+struc_covar <- read.csv(here("QCd_pheno_covar/UKB/WMcovardiscrete_structural.txt"), header =T, sep = " ")
+scale_covar <- read.csv(here("QCd_pheno_covar/UKB/WMqcovar.txt"), header =T, sep = " ")
+batch_covar <- read.csv(here("QCd_pheno_covar/UKB/UKB_whitmatterandsomecovars.txt"), header =T, sep = " ") # not standardized data, only needed f.22000.0.0 for sequencing batch number
+
+summary(batch_covar$Age) # summary of age before being scaled
+
+batch_covar <- batch_covar[, c("f.eid", "f.22000.0.0")]
+# Only struc_pheno has higher (37509) obj than the rest of the dataset (31797)
+
+UKB.Data <- read.csv(here("QCd_pheno_covar/UKB/eTIV.csv"), header = T, sep = ",") # Read-in UKB data given by Richard
+UKB.Data$IID <- as.integer(gsub("UKB", "", UKB.Data$participant)) # participant = UKB+IID
+UKB.Data$FID <- as.integer(gsub("UKB", "", UKB.Data$participant))
+UKB.Data <- UKB.Data[, c("FID", "IID", "dx")] # Grabbing data needed only
+
+covar <- full_join(scale_covar, struc_covar, by = c("FID", "IID"))
+batch_covar <- rename(batch_covar, "IID" = "f.eid") # confirmed that f.eid is the same as IID as well as FID
+batch_covar <- rename(batch_covar, "batchID" = "f.22000.0.0") #rename to understandable label
+covar <- full_join(covar, batch_covar, by = "IID")
+covar <- rename(covar, "T1T2" = "Covar") # update to correct covar name
+covar$T1T2[covar$T1T2 == "T1"] <- 0      # correct label T1   (which actually is T1T1) to correct binary value
+covar$T1T2[covar$T1T2 == "T1T1"] <- 1    # correct label T1T1 (which actually is T1T2) to correct binary value
+remove(struc_covar, scale_covar, batch_covar) # remove unused object
+
+fUKBasd <- rename(fUKBasd, "ftotalsum" = "totalsum", "fPGS_scaled" = "PGS_scaled") # rename so when creating master data set it is not merged
+mUKBasd <- rename(mUKBasd, "mtotalsum" = "totalsum", "mPGS_scaled" = "PGS_scaled") # rename so when creating master data set it is not merged
+pgs.img <- list(covar, UKBasd, fUKBasd, mUKBasd, scale_pheno, struc_pheno, UKB.Data)
+pgs.img <- pgs.img %>% reduce(full_join, by= c("IID", "FID")) # merge data sets
+pgs.img <- pgs.img[!is.na(pgs.img$Age),] # Drop NAs by as they will only include structure phenotype not any other info
+
+pgs.img$cohort <-ifelse(pgs.img$Sex==0, "female", NA) # create new column cohort for easy grouping in plot with consideration of NA
+pgs.img$cohort <-ifelse(pgs.img$Sex==1, "male", pgs.img$cohort) # create new column cohort for easy grouping in plot
+
+remove(covar, fUKBasd, mUKBasd, scale_pheno, struc_pheno, UKBasd, UKB.Data) # remove unused object
+
+# Scale, as PCA, eular, fd, scan.site, batchID, Sex, T1T2 not scaled
+pgs.img$T1T2 <- as.numeric(pgs.img$T1T2)
+pgs.img[c(7:53)] <- scale(pgs.img[c(7:53)])
+```
+
+```{r ABCD, echo=FALSE}
+# Note: Age = months, age is 0/1 coded, age_squared = age*age, age_sex was done by age*sex column directly, how age_sexsquared is generated unknown
+# No T1T2 status, No batch ID
+
+Covar <- read.csv(here("QCd_pheno_covar/ABCD/ABCD_allcovariates.txt"), header = T, sep = "\t") # row 10584 - 10589 is NA
+Covar <- drop_na(Covar) # Assume it is normal and delete these rows
+Covar$site_id_l <- gsub("site","", Covar$site_id_l) # delete 'site' to make site number a numeric column
+Covar$site_id_l <- as.numeric(Covar$site_id_l) # change value class as numeric
+
+Pheno <- read.csv(here("QCd_pheno_covar/ABCD/ABCD_corticalpheno.txt"), header = T, sep = " ")  # Miss 20 people in comparison to 10583 in the Covar
+ABCD <- full_join(Covar, Pheno, by = c("FID", "IID")) # merge data that are shared between two datasets
+ABCD <- drop_na(ABCD) # Eliminated all NAs, for more info on why use colSums(is.na(ABCD))
+
+gPCA <- fread(here("QCd_pheno_covar/ABCD/ABCD_PCsforGWAS_European.txt"))
+gPCA <- rename(gPCA, IID = Sample_name) # Change name for merging
+gPCA <- gPCA[,c(1:11)] # Only leave lm model relevant amount of PCAs
+Covar <- full_join(Covar, gPCA, by = "IID") # merge data that are shared between two datasets
+
+ABCD <- full_join(Covar, Pheno, by = c("FID", "IID")) # merge data that are shared between two datasets
+ABCD <- ABCD[, c(1:5, 8:22, 28:29, 32:33)] # leave only relevant phenotypes, ABCD don't have T1T2 status
+
+ABCD$cohort <-ifelse(ABCD$gender==1, "female", NA) # create new column cohort for easy grouping in plot with consideration of NA
+ABCD$cohort <-ifelse(ABCD$gender==0, "male", ABCD$cohort) 
+
+ABCD <- rename(ABCD, Sex = gender) # Rename For better code translation from UKB to ABCD
+ABCD <- rename(ABCD, Age = interview_age)
+
+# Read-in scores, rename and reformat data set for merging with ABCD
+PGS <- fread(here("PGS/ABCD/autism_unstratified_finalscore.profile"))
+PGS$PGS <- scale(PGS$SCORE) # Scaled numbers
+PGS <- PGS[,c(2, 7)]
+
+fPGS <- fread(here("PGS/ABCD/autism_females_finalscore.profile"))
+fPGS$fPGS <- scale(fPGS$SCORE) # Scaled numbers
+fPGS <- fPGS[,c(2, 7)]
+
+mPGS <- fread(here("PGS/ABCD/autism_males_finalscore.profile"))
+mPGS$mPGS <- scale(mPGS$SCORE) # Scaled numbers
+mPGS <- mPGS[,c(2, 7)]
+
+# Merge PGS, fPGS and mPGS score to ABCD
+ABCD <- list(ABCD, PGS, fPGS, mPGS) %>% reduce(left_join, by= c("IID"))
+ABCD <- drop_na(ABCD)
+
+summary(ABCD$Age/12) # Summary of Age By Month thus we can get summary for age in years before being scaled
+
+# Scale All variables
+ABCD[c(3:24)] <- scale(ABCD[c(3:24)])
+
+remove(Covar, Pheno, gPCA, fPGS, mPGS, PGS) # Remove dataset
+```
+
+```{r merge datasets}
+ABCD <- ABCD[20:23]
+ABCD$cohort <- "ABCD"
+ABCD <- rename(ABCD, "MC" = "meanCurv", "ICVF" = "NODDI_ICVF")
+
+
+pgs.img <- pgs.img[c(60,66,69,70)]
+pgs.img$cohort <- "UKB"
+pgs.img <- rename(pgs.img, "SA" = "Struct_SA", "CT" = "Struct_CT", "MC" = "Struct_meanCurv", "ICVF" = "meanNODDI_ICVF")
+
+ALL <- full_join(ABCD, pgs.img)
+```
+
+```{r t and F test to test cohort mean and variance difference in SD}
+# F-test
+var.test(SA ~ cohort, data = ALL)
+var.test(CT ~ cohort, data = ALL)
+var.test(MC ~ cohort, data = ALL)
+var.test(ICVF ~ cohort, data = ALL)
+
+# t-test
+# In R, t-test default assumes unequal variance so no need for additional arguments
+t.test(SA ~ cohort, data = ALL)
+t.test(CT ~ cohort, data = ALL)
+t.test(MC ~ cohort, data = ALL)
+t.test(ICVF ~ cohort, data = ALL)
+
+denSA <- ggdensity(ALL, x = "SA",add = "mean", color = "cohort", fill = "cohort", palette = c("#FF9999", "#00AFBB")) + xlim(-5,5) + ylim(0.0, 0.6) + 
+  labs(fill = "cohort", color = "cohort", x = "Surface Area in SD")
+denSA
+
+denCT <- ggdensity(ALL, x = "CT",add = "mean", color = "cohort", fill = "cohort", palette = c("#FF9999", "#00AFBB")) + xlim(-5,5) + ylim(0.0, 0.6) + 
+  labs(fill = "cohort", color = "cohort", x = "Cortical Thickness in SD")
+denCT
+
+denMC <- ggdensity(ALL, x = "MC",add = "mean", color = "cohort", fill = "cohort", palette = c("#FF9999", "#00AFBB")) + xlim(-5,5) + ylim(0.0, 0.6) + 
+  labs(fill = "cohort", color = "cohort", x = "Mean Curvature in SD")
+denMC
+
+denICVF <- ggdensity(ALL, x = "ICVF",add = "mean", color = "cohort", fill = "cohort", palette = c("#FF9999", "#00AFBB")) + xlim(-5,5) + ylim(0.0, 0.6) + 
+  labs(fill = "cohort", color = "cohort", x = "Intracellular Volume Fraction in SD")
+denICVF
+```
+
+```{r Regional Pearson Correlation Coefficient between sex and cohorts}
+
+```
+

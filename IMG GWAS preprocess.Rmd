@@ -1,0 +1,777 @@
+---
+title: "IMG GWAS genetic_cor"
+author: "Yuanjun Gu"
+date: "5/10/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(here) # For reproducibility, remember open new project at the pgs_img folder
+library(data.table, include.only = "fread")
+library(tidyverse)
+library(ggplot2)
+```
+
+```{r log on preprocess Global IMG.GWAS sumstat, eval=FALSE, include=FALSE}
+# Can't do loop as it will literately crash the Rserver :-(
+# N is 1 or 2 as it is from a meta-analysis, with 1 = UKB; 2 = UKB+ABCD
+# If you start to see *** recursive gc invocation error, clean memory by gc() will prevent likely crash.
+
+# For SA
+SA_meta <- fread(here("PGS/IMG GWAS/SA_meta.txt"))
+SA_UKB <- subset(SA_meta, N == 1)
+SA_UKB$N <- 31797 # UKB population
+write.table(SA_UKB, file=here("PGS/IMG GWAS/UKB/SA_UKB.txt"))
+
+SA_UKB_ABCD <- subset(SA_meta, N == 2)
+SA_UKB_ABCD$N <- 36663 # UKB(31797) + ABCD (4,866) = 36663
+write.table(SA_UKB_ABCD, file=here("PGS/IMG GWAS/UKB_and_ABCD/SA_UKB_ABCD.txt"))
+
+# For CT
+CT_meta <- fread(here("PGS/IMG GWAS/CT_meta.txt"))
+CT_UKB <- subset(CT_meta, N == 1)
+CT_UKB$N <- 31797 # UKB population
+write.table(CT_UKB, file=here("PGS/IMG GWAS/UKB/CT_UKB.txt"))
+
+CT_UKB_ABCD <- subset(CT_meta, N == 2)
+CT_UKB_ABCD$N <- 36663 # UKB(31797) + ABCD (4,866) = 36663
+write.table(CT_UKB_ABCD, file=here("PGS/IMG GWAS/UKB_and_ABCD/CT_UKB_ABCD.txt"))
+
+# For Mean Curvature
+MC_meta <- fread(here("PGS/IMG GWAS/Meancurvature_meta.txt"))
+MC_UKB <- subset(MC_meta, N == 1)
+MC_UKB$N <- 31797 # UKB population
+write.table(MC_UKB, file=here("PGS/IMG GWAS/UKB/MC_UKB.txt"))
+
+MC_UKB_ABCD <- subset(MC_meta, N == 2)
+MC_UKB_ABCD$N <- 36663 # UKB(31797) + ABCD (4,866) = 36663
+write.table(MC_UKB_ABCD, file=here("PGS/IMG GWAS/UKB_and_ABCD/MC_UKB_ABCD.txt"))
+
+# For ICVF
+ICVF_meta <- fread(here("PGS/IMG GWAS/ICVF_meta.txt"))
+ICVF_UKB <- subset(ICVF_meta, N == 1)
+ICVF_UKB$N <- 31797 # UKB population
+write.table(ICVF_UKB, file=here("PGS/IMG GWAS/UKB/ICVF_UKB.txt"))
+
+ICVF_UKB_ABCD <- subset(ICVF_meta, N == 2)
+ICVF_UKB_ABCD$N <- 36663 # UKB(31797) + ABCD (4,866) = 36663
+write.table(ICVF_UKB_ABCD, file=here("PGS/IMG GWAS/UKB_and_ABCD/ICVF_UKB_ABCD.txt"))
+
+# For FA
+FA_meta <- fread(here("PGS/IMG GWAS/FA_meta.txt"))
+FA_UKB <- subset(FA_meta, N == 1)
+FA_UKB$N <- 31797 # UKB population
+write.table(FA_UKB, file=here("PGS/IMG GWAS/UKB/FA_UKB.txt"))
+
+FA_UKB_ABCD <- subset(FA_meta, N == 2)
+FA_UKB_ABCD$N <- 36663 # UKB(31797) + ABCD (4,866) = 36663
+write.table(FA_UKB_ABCD, file=here("PGS/IMG GWAS/UKB_and_ABCD/FA_UKB_ABCD.txt"))
+
+# For Folding Index
+FoldIndex_meta <- fread(here("PGS/IMG GWAS/Foldingindex_meta.txt"))
+FoldIndex_UKB <- subset(FoldIndex_meta, N == 1)
+FoldIndex_UKB$N <- 31797 # UKB population
+write.table(FoldIndex_UKB, file=here("PGS/IMG GWAS/UKB/FoldIndex_UKB.txt"))
+
+FoldIndex_UKB_ABCD <- subset(FoldIndex_meta, N == 2)
+FoldIndex_UKB_ABCD$N <- 36663 # UKB(31797) + ABCD (4,866) = 36663
+write.table(FoldIndex_UKB_ABCD, file=here("PGS/IMG GWAS/UKB_and_ABCD/FoldIndex_UKB_ABCD.txt"))
+
+# For Gaussian Curvature
+GSCurv_meta <- fread(here("PGS/IMG GWAS/Gaussiancurvature_meta.txt"))
+GSCurv_UKB <- subset(GSCurv_meta, N == 1)
+GSCurv_UKB$N <- 31797 # UKB population
+write.table(GSCurv_UKB, file=here("PGS/IMG GWAS/UKB/GSCurv_UKB.txt"))
+
+GSCurv_UKB_ABCD <- subset(GSCurv_meta, N == 2)
+GSCurv_UKB_ABCD$N <- 36663 # UKB(31797) + ABCD (4,866) = 36663
+write.table(GSCurv_UKB_ABCD, file=here("PGS/IMG GWAS/UKB_and_ABCD/GSCurv_UKB_ABCD.txt"))
+
+# For Intrinsic Curvature
+IntrCurv_meta <- fread(here("PGS/IMG GWAS/Intrinsic_meta.txt"))
+IntrCurv_UKB <- subset(IntrCurv_meta, N == 1)
+IntrCurv_UKB$N <- 31797 # UKB population
+write.table(IntrCurv_UKB, file=here("PGS/IMG GWAS/UKB/IntrCurv_UKB.txt"))
+
+IntrCurv_UKB_ABCD <- subset(IntrCurv_meta, N == 2)
+IntrCurv_UKB_ABCD$N <- 36663 # UKB(31797) + ABCD (4,866) = 36663
+write.table(IntrCurv_UKB_ABCD, file=here("PGS/IMG GWAS/UKB_and_ABCD/IntrCurv_UKB_ABCD.txt"))
+
+# For ISOVF
+ISOVF_meta <- fread(here("PGS/IMG GWAS/ISOVF_meta.txt"))
+ISOVF_UKB <- subset(ISOVF_meta, N == 1)
+ISOVF_UKB$N <- 31797 # UKB population
+write.table(ISOVF_UKB, file=here("PGS/IMG GWAS/UKB/ISOVF_UKB.txt"))
+
+ISOVF_UKB_ABCD <- subset(ISOVF_meta, N == 2)
+ISOVF_UKB_ABCD$N <- 36663 # UKB(31797) + ABCD (4,866) = 36663
+write.table(ISOVF_UKB_ABCD, file=here("PGS/IMG GWAS/UKB_and_ABCD/ISOVF_UKB_ABCD.txt"))
+
+# For LGI
+LGI_meta <- fread(here("PGS/IMG GWAS/LGI_meta.txt"))
+LGI_UKB <- subset(LGI_meta, N == 1)
+LGI_UKB$N <- 31797 # UKB population
+write.table(LGI_UKB, file=here("PGS/IMG GWAS/UKB/LGI_UKB.txt"))
+
+LGI_UKB_ABCD <- subset(LGI_meta, N == 2)
+LGI_UKB_ABCD$N <- 36663 # UKB(31797) + ABCD (4,866) = 36663
+write.table(LGI_UKB_ABCD, file=here("PGS/IMG GWAS/UKB_and_ABCD/LGI_UKB_ABCD.txt"))
+
+# For MD
+MD_meta <- fread(here("PGS/IMG GWAS/MD_meta.txt"))
+MD_UKB <- subset(MD_meta, N == 1)
+MD_UKB$N <- 31797 # UKB population
+write.table(MD_UKB, file=here("PGS/IMG GWAS/UKB/MD_UKB.txt"))
+
+MD_UKB_ABCD <- subset(MD_meta, N == 2)
+MD_UKB_ABCD$N <- 36663 # UKB(31797) + ABCD (4,866) = 36663
+write.table(MD_UKB_ABCD, file=here("PGS/IMG GWAS/UKB_and_ABCD/MD_UKB_ABCD.txt"))
+
+# For OD
+OD_meta <- fread(here("PGS/IMG GWAS/OD_meta.txt"))
+OD_UKB <- subset(OD_meta, N == 1)
+OD_UKB$N <- 31797 # UKB population
+write.table(OD_UKB, file=here("PGS/IMG GWAS/UKB/OD_UKB.txt"))
+
+OD_UKB_ABCD <- subset(OD_meta, N == 2)
+OD_UKB_ABCD$N <- 36663 # UKB(31797) + ABCD (4,866) = 36663
+write.table(OD_UKB_ABCD, file=here("PGS/IMG GWAS/UKB_and_ABCD/OD_UKB_ABCD.txt"))
+
+# For Volume
+Volume_meta <- fread(here("PGS/IMG GWAS/Volume_meta.txt"))
+Volume_UKB <- subset(Volume_meta, N == 1)
+Volume_UKB$N <- 31797 # UKB population
+write.table(Volume_UKB, file=here("PGS/IMG GWAS/UKB/Volume_UKB.txt"))
+
+Volume_UKB_ABCD <- subset(Volume_meta, N == 2)
+Volume_UKB_ABCD$N <- 36663 # UKB(31797) + ABCD (4,866) = 36663
+write.table(Volume_UKB_ABCD, file=here("PGS/IMG GWAS/UKB_and_ABCD/Volume_UKB_ABCD.txt"))
+
+```
+
+```{r Global IMG phenotype munge, eval=FALSE, include=FALSE}
+# Set environment
+# Conda activate ldsc
+
+# Munge to get sumstats
+
+# For SA
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/SA_meta.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# For CT
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/CT_meta.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/CT_meta \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# For MC
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/Meancurvature_meta.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/Meancurvature_meta \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# For ICVF
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/ICVF_meta.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+```
+
+```{r UKB regional coding for regional genetic correlation sumstats, eval=FALSE, include=FALSE}
+# /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/
+
+# For Reg.vis ICVF:
+# Region No.  Region Name   Munge Status
+# 2           MST           YES
+# 75          45            YES
+# 79          IFJa          YES
+# 94          47s           YES
+# 106         PoI2          YES
+# 113         FOP1          YES
+# 125         A5            YES
+# 128         STSda         YES
+# 170         p10p          YES
+
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta2.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg2.txt \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta75.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg75.txt \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta79.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg79.txt \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta94.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg94.txt \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta94.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg94.txt \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta106.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg106.txt \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta113.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg113.txt \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta125.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg125.txt \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta128.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg128.txt \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta170.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg170.txt \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# !! Forget to remove .txt, will rename to remove it !!
+
+
+
+# For Reg.vis SA:
+# Region No.  Region Name   Munge Status
+# 11          PEF           YES
+# 12          55b           YES
+# 24          A1            YES
+# 25          PSL           YES
+# 56          6v            YES
+# 67          8Av           YES
+# 73          8C            YES
+# 80          IFJp          YES
+# 86          9-46d         YES
+# 99          43            YES
+# 100         OP4           YES
+# 101         OP1           YES
+# 102         OP2-3         YES
+# 104         RI            YES
+# 105         PFcm          YES
+# 112         AAIC          YES
+# 115         FOP2          YES
+# 134         TE2a          YES
+# 147         PFop          YES
+# 148         PF            YES
+# 160         VMV2          YES
+# 161         31pd          YES
+# 174         LBelt         YES
+# 177         TE1m          YES
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta11.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg11 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta12.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg12 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta24.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg24 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta25.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg25 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta56.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg56 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta67.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg67 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta73.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg73 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta80.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg80 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta86.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg86 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta99.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg99 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta100.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg100 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta101.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg101 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta102.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg102 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta104.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg104 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta105.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg105 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta112.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg112 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta115.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg115 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta134.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg134 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta147.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg147 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta148.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg148 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta160.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg160 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta161.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg161 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta174.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg174 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/SA/SA_plinkmeta177.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/SA_meta_reg177 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+
+# For Reg.IMG~PGS+Glb.IMG ICVF:
+# 128         STSda
+# Doesn't need to run munge, as GWAS is not corrected for Glb.
+
+
+# For Reg.IMG~PGS+PGS:SEX+Glb.IMG ICVF:
+# 128         STSda
+# Doesn't need to run munge, as GWAS is not corrected for PGS:SEX and Glb.
+```
+
+```{r UKB log for genetic correlation code, eval=FALSE, include=FALSE}
+# conda acticate ldsc
+# cd /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/
+
+# For Autism GWAS vs All tested IMG Phenotype
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/ldsc.py \
+# --rg /rds/user/yg330/hpc-work/h2_Genetic_Correlation/Project1/Data/ASD/ASDraw.sumstats,SA_meta.sumstats.gz,CT_meta.sumstats.gz,Meancurvature_meta.sumstats.gz,ICVF_meta.sumstats.gz \
+# --ref-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ \
+# --w-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ \
+# --out /rds/user/yg330/hpc-work/pgs_img/Results/ASD_IMG_genetic_correlation
+
+# Summary of Genetic Correlation Results
+#  p1                          p2                   rg      se       z       p      h2_obs      h2_obs_se  h2_int    h2_int_se gcov_int     gcov_int_se
+#  ASDraw.sumstats             SA_meta.sumstats.gz  0.0550  0.0536  1.0246  0.3055  7976.6862   809.8900  0.9806     0.0171   -0.0219       0.0081
+#  ASDraw.sumstats             CT_meta.sumstats.gz  0.0223  0.0654  0.3412  0.7329  6037.0325   753.3717  0.9969     0.0182    0.0054       0.0086
+#  ASDraw.sumstats  Meancurvature_meta.sumstats.gz -0.0609  0.0562 -1.0834  0.2786  6523.0990   690.0342  1.0021     0.0165    0.0097       0.0078
+#  ASDraw.sumstats           ICVF_meta.sumstats.gz -0.2189  0.0702 -3.1189  0.0018  3251.5914   662.1071  1.0023     0.0166    0.0168       0.0078
+
+
+# For Autism GWAS vs All sig.Reg.ICVF Phenotype
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/ldsc.py \
+# --rg /rds/user/yg330/hpc-work/h2_Genetic_Correlation/Project1/Data/ASD/ASDraw.sumstats,ICVF_meta_reg2.txt.sumstats.gz,ICVF_meta_reg75.txt.sumstats.gz,ICVF_meta_reg79.txt.sumstats.gz,ICVF_meta_reg94.txt.sumstats.gz,ICVF_meta_reg106.txt.sumstats.gz,ICVF_meta_reg113.txt.sumstats.gz,ICVF_meta_reg125.txt.sumstats.gz,ICVF_meta_reg128.txt.sumstats.gz,ICVF_meta_reg170.txt.sumstats.gz \
+# --ref-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ \
+# --w-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ \
+# --out /rds/user/yg330/hpc-work/pgs_img/Results/ASD_Reg_ICVF_genetic_correlation
+
+# For Autism GWAS vs All sig.Reg.SA Phenotype
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/ldsc.py \
+# --rg /rds/user/yg330/hpc-work/h2_Genetic_Correlation/Project1/Data/ASD/ASDraw.sumstats,SA_meta_reg11.sumstats.gz,SA_meta_reg12.sumstats.gz,SA_meta_reg24.sumstats.gz,SA_meta_reg25.sumstats.gz,SA_meta_reg56.sumstats.gz,SA_meta_reg67.sumstats.gz,SA_meta_reg73.sumstats.gz,SA_meta_reg80.sumstats.gz,SA_meta_reg86.sumstats.gz,SA_meta_reg99.sumstats.gz,SA_meta_reg100.sumstats.gz,SA_meta_reg101.sumstats.gz,SA_meta_reg102.sumstats.gz,SA_meta_reg104.sumstats.gz,SA_meta_reg105.sumstats.gz,SA_meta_reg112.sumstats.gz,SA_meta_reg115.sumstats.gz,SA_meta_reg134.sumstats.gz,SA_meta_reg147.sumstats.gz,SA_meta_reg148.sumstats.gz,SA_meta_reg160.sumstats.gz,SA_meta_reg161.sumstats.gz,SA_meta_reg174.sumstats.gz,SA_meta_reg177.sumstats.gz \
+# --ref-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ \
+# --w-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ \
+# --out /rds/user/yg330/hpc-work/pgs_img/Results/ASD_Reg_SA_genetic_correlation
+
+```
+
+```{r ABCD regional coding for regional genetic correlation sumstats, eval=FALSE, include=FALSE}
+# /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/
+
+
+# For Reg.vis ICVF:
+# Region No.  Region Name   Munge Status
+# 4           V2            YES
+# 27          PCV           YES
+# 42          7AL           YES
+# 44          6ma           YES
+# 47          7PC           YES
+# 153         VMV1          YES
+# 157         FST           YES
+# 163         VVC           YES
+
+# For Reg.vis MC:
+# Region No.  Region Name   Munge Status
+# 136         TE2p          YES
+
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta4.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg4 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta27.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg27 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta42.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg42 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta44.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg44 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta47.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg47 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta153.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg153 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta157.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg157 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/ICVF/ICVF_plinkmeta163.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/ICVF_meta_reg163 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/munge_sumstats.py \
+# --sumstats /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/MC/Mean_plinkmeta136.txt \
+# --N 36663 \
+# --out /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/MC_meta_reg136 \
+# --merge-alleles /rds/user/yg330/hpc-work/ldsc_munge/w_hm3.snplist
+```
+
+```{r ABCD log for genetic correlation code, eval=FALSE, include=FALSE}
+# conda acticate ldsc
+# cd /rds/user/yg330/hpc-work/pgs_img/PGS/IMG_GWAS/UKB_and_ABCD/sumstats/
+
+# For Autism GWAS vs All sig.Reg.ICVF Phenotype
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/ldsc.py \
+# --rg /rds/user/yg330/hpc-work/h2_Genetic_Correlation/Project1/Data/ASD/ASDraw.sumstats,ICVF_meta_reg4.sumstats.gz,ICVF_meta_reg27.sumstats.gz,ICVF_meta_reg42.sumstats.gz,ICVF_meta_reg44.sumstats.gz,ICVF_meta_reg47.sumstats.gz,ICVF_meta_reg153.sumstats.gz,ICVF_meta_reg157.sumstats.gz,ICVF_meta_reg163.sumstats.gz \
+# --ref-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ \
+# --w-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ \
+# --out /rds/user/yg330/hpc-work/pgs_img/Results/ABCD.ASD_Reg_ICVF_genetic_correlation
+
+# For Autism GWAS vs All sig.Reg.SA Phenotype
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/ldsc.py \
+# --rg /rds/user/yg330/hpc-work/h2_Genetic_Correlation/Project1/Data/ASD/ASDraw.sumstats,MC_meta_reg136.sumstats.gz \
+# --ref-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ \
+# --w-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ \
+# --out /rds/user/yg330/hpc-work/pgs_img/Results/ABCD.ASD_Reg_MC_genetic_correlation
+
+# For Reg.vis ICVF:
+# Region No.  Region Name   Munge Status
+# 4           V2            YES
+# 27          PCV           YES
+# 42          7AL           YES
+# 44          6ma           YES
+# 47          7PC           YES
+# 153         VMV1          YES
+# 157         FST           YES
+# 163         VVC           YES
+
+# For Reg.vis MC:
+# Region No.  Region Name   Munge Status
+# 136         TE2p          YES
+
+
+```
+
+
+```{r visualisation of the genetic correlation results}
+# For easy coding, genetic correlation summary in the output was copy pasted into a new *_edt.txt file for easy fread
+
+# For Autism GWAS vs All tested IMG Phenotype
+ASD.IMG.rg <- fread(here("Results/ASD_IMG_genetic correlation_edt.txt"))
+ASD.IMG.rg$p1 <- "ASDraw"
+ASD.IMG.rg$p2 <- gsub("_meta.sumstats.gz", "", ASD.IMG.rg$p2)
+ASD.IMG.rg$CI <- ASD.IMG.rg$se*1.96 # Add CI
+ASD.IMG.rg$p2 <- c("SA", "CT", "MC", "ICVF")
+ASD.IMG.rg$p.adj <- p.adjust(ASD.IMG.rg$p, method = "fdr", n = 4) # Is p adjusted for multiple testing?
+ASD.IMG.rg$p.adj.label <- ifelse(ASD.IMG.rg$p.adj<0.01, "**", NA) # Only ICVF < 0.01 and < 0.05 therefore, only ** label is needed.
+
+
+ASD.IMG.rg.vis <- ggplot(ASD.IMG.rg, aes(x = rg, y = p2, xmin = rg-CI, xmax = rg+CI)) + geom_point() + geom_text(aes(label = p.adj.label), vjust = -0.5) + 
+  geom_vline(xintercept=0, color = "grey")+ geom_errorbarh(height = 0.2) + xlim(-1,1) + ggtitle("Autism GWAS vs MRI-derived Phenotype Genetic Correlation", "p adjusted after fdr")
+
+ASD.IMG.rg.vis
+
+# For Autism GWAS vs All sig.Reg.ICVF Phenotype (ABCD + UKB)
+# For UKB
+UKB.ASD.ICVF.rg <- fread(here("Results/ASD_Reg_ICVF_genetic correlation_edt.txt"))
+UKB.ASD.ICVF.rg$p1 <- "ASDraw"
+UKB.ASD.ICVF.rg$p2 <- gsub("_meta", "", UKB.ASD.ICVF.rg$p2)
+UKB.ASD.ICVF.rg$p2 <- gsub(".txt.sumstats.gz", "", UKB.ASD.ICVF.rg$p2)
+UKB.ASD.ICVF.rg$CI <- UKB.ASD.ICVF.rg$se*1.96 # ADD CI
+UKB.ASD.ICVF.rg$p.adj <- p.adjust(UKB.ASD.ICVF.rg$p, method = "fdr", n = 9) # Is p adjusted for multiple testing?
+# Add ICVF Sig labels
+UKB.ASD.ICVF.rg$p.adj.label <- ifelse(UKB.ASD.ICVF.rg$p.adj<0.05, "*", NA) 
+UKB.ASD.ICVF.rg$p.adj.label <- ifelse(UKB.ASD.ICVF.rg$p.adj<0.01, "**", UKB.ASD.ICVF.rg$p.adj.label)
+UKB.ASD.ICVF.rg$p.adj.label <- ifelse(UKB.ASD.ICVF.rg$p.adj<0.001, "***", UKB.ASD.ICVF.rg$p.adj.label)
+# ICVF p2 readable format
+UKB.ASD.ICVF.rg$p2.reg.name <- c("MST", "45", "IFJa", "47s", "PoI2", "FOP1", "A5", "STSda", "p10p")
+# Add Label for merging
+UKB.ASD.ICVF.rg$Cohort <- "UKB"
+
+# Region List as shown below, same as what used in generating the summary
+# Region No.  Region Name
+# 2           MST           
+# 75          45            
+# 79          IFJa          
+# 94          47s           
+# 106         PoI2          
+# 113         FOP1          
+# 125         A5            
+# 128         STSda         
+# 170         p10p          
+
+# For ABCD
+ABCD.ASD.ICVF.rg <- fread(here("Results/ABCD.ASD_Reg_ICVF_genetic_correlation_edt.txt"))
+ABCD.ASD.ICVF.rg$p1 <- "ASDraw"
+ABCD.ASD.ICVF.rg$p2 <- gsub("_meta", "", ABCD.ASD.ICVF.rg$p2)
+ABCD.ASD.ICVF.rg$p2 <- gsub(".sumstats.gz", "", ABCD.ASD.ICVF.rg$p2)
+ABCD.ASD.ICVF.rg$CI <- ABCD.ASD.ICVF.rg$se*1.96 # ADD CI
+ABCD.ASD.ICVF.rg$p.adj <- p.adjust(ABCD.ASD.ICVF.rg$p, method = "fdr", n = 8) # Is p adjusted for multiple testing?
+# Add ICVF Sig labels
+ABCD.ASD.ICVF.rg$p.adj.label <- ifelse(ABCD.ASD.ICVF.rg$p.adj<0.05, "*", NA) 
+ABCD.ASD.ICVF.rg$p.adj.label <- ifelse(ABCD.ASD.ICVF.rg$p.adj<0.01, "**", ABCD.ASD.ICVF.rg$p.adj.label)
+ABCD.ASD.ICVF.rg$p.adj.label <- ifelse(ABCD.ASD.ICVF.rg$p.adj<0.001, "***", ABCD.ASD.ICVF.rg$p.adj.label)
+# ICVF p2 readable format
+ABCD.ASD.ICVF.rg$p2.reg.name <- c("V2", "PCV", "7AL", "6ma", "7PC", "VMV1", "FST", "VVC")
+# Add Label for merging
+ABCD.ASD.ICVF.rg$Cohort <- "ABCD"
+
+# For Reg.vis ICVF:
+# Region No.  Region Name 
+# 4           V2          
+# 27          PCV           
+# 42          7AL           
+# 44          6ma           
+# 47          7PC           
+# 153         VMV1          
+# 157         FST           
+# 163         VVC           
+
+# Merge dataset
+ASD.ICVF.rg <- full_join(ABCD.ASD.ICVF.rg, UKB.ASD.ICVF.rg)
+# ASD vs ICVF genetic correlation visualisation for both cohorts
+
+
+# Data Visualization
+ASD.ICVF.rg.vis <- ggplot(ASD.ICVF.rg, aes(x = rg, y = p2.reg.name, color = Cohort, xmin = rg-CI, xmax = rg+CI)) + geom_point() + geom_text(aes(label = p.adj.label), vjust = -0.1) + 
+  geom_vline(xintercept=0, color = "grey")+ geom_errorbarh(height = 0.2) + xlim(-1,1) + ggtitle("Autism GWAS vs ICVF Regional Genetic Correlation", "p adjusted after fdr") + ylab("p2")
+
+ASD.ICVF.rg.vis
+
+
+
+
+# For Autism GWAS vs All sig.Reg.SA Phenotype
+ASD.SA.rg <- fread(here("Results/ASD_Reg_SA_genetic correlation_edt.txt"))
+ASD.SA.rg$p1 <- "ASDraw"
+ASD.SA.rg$p2 <- gsub("_meta", "", ASD.SA.rg$p2)
+ASD.SA.rg$p2 <- gsub(".sumstats.gz", "", ASD.SA.rg$p2)
+ASD.SA.rg$CI <- ASD.SA.rg$se*1.96 # Add CI
+ASD.SA.rg$p.adj <- p.adjust(ASD.SA.rg$p, method = "fdr", n = 24) # Is p adjusted for multiple testing?
+# Add SA Sig labels
+ASD.SA.rg$p.adj.label <- ifelse(ASD.SA.rg$p.adj<0.05, "*", NA) 
+ASD.SA.rg$p.adj.label <- ifelse(ASD.SA.rg$p.adj<0.01, "**", ASD.SA.rg$p.adj.label)
+ASD.SA.rg$p.adj.label <- ifelse(ASD.SA.rg$p.adj<0.001, "***", ASD.SA.rg$p.adj.label)
+# SA p2 readable format
+ASD.SA.rg$p2.adj <- c("PEF", "55b", "A1", "PSL", "6v", "8Av", "8C", "IFJp", "9-46d", "43", "OP4", "OP1", "OP2-3", "RI", "PFcm", "AAIC", "FOP2", "TE2a", "PFop", "PF", "VMV2", "31pd", "LBelt", "TE1m")
+
+# Region No.  Region Name
+# 11          PEF           
+# 12          55b           
+# 24          A1            
+# 25          PSL           
+# 56          6v            
+# 67          8Av           
+# 73          8C            
+# 80          IFJp          
+# 86          9-46d         
+# 99          43            
+# 100         OP4           
+# 101         OP1           
+# 102         OP2-3         
+# 104         RI            
+# 105         PFcm          
+# 112         AAIC          
+# 115         FOP2          
+# 134         TE2a          
+# 147         PFop          
+# 148         PF            
+# 160         VMV2          
+# 161         31pd          
+# 174         LBelt         
+# 177         TE1m          
+
+ASD.SA.rg.vis <- ggplot(ASD.SA.rg, aes(x = rg, y = p2.adj, xmin = rg-CI, xmax = rg+CI)) + geom_vline(xintercept=0, color = "grey") + geom_point() + geom_text(aes(label = p.adj.label), vjust = -0.5) + geom_errorbarh(height = 0.2) + xlim(-1,1) + ggtitle("Autism GWAS vs SA Phenotype Genetic Correlation") + ylab("p2") 
+
+ASD.SA.rg.vis
+
+# For Autism GWAS vs All sig.Reg.MC Phenotype
+ASD.MC.rg <- fread(here("Results/ABCD.ASD_Reg_MC_genetic_correlation_edt.txt"))
+ASD.MC.rg$p1 <- "ASDraw"
+ASD.MC.rg$p2 <- gsub("_meta", "", ASD.MC.rg$p2)
+ASD.MC.rg$p2 <- gsub(".sumstats.gz", "", ASD.MC.rg$p2)
+ASD.MC.rg$CI <- ASD.MC.rg$se*1.96 # Add CI
+# Add MC Sig labels
+ASD.MC.rg$p.adj.label <- ifelse(ASD.MC.rg$p.adj<0.05, "*", NA) 
+ASD.MC.rg$p.adj.label <- ifelse(ASD.MC.rg$p.adj<0.01, "**", ASD.MC.rg$p.adj.label)
+ASD.MC.rg$p.adj.label <- ifelse(ASD.MC.rg$p.adj<0.001, "***", ASD.MC.rg$p.adj.label)
+# MC p2 readable format
+ASD.MC.rg$p2.reg.name <- c("TE2p")
+
+# For Reg.vis MC:
+# Region No.  Region Name   Munge Status
+# 136         TE2p          YES
+
+ASD.MC.rg.vis <- ggplot(ASD.MC.rg, aes(x = rg, y = p2.reg.name, xmin = rg-CI, xmax = rg+CI)) + geom_point() + geom_text(aes(label = p.adj.label), vjust = -0.5) + 
+  geom_vline(xintercept=0, color = "grey")+ geom_errorbarh(height = 0.2) + xlim(-1,1) + ggtitle("Autism GWAS vs MC Phenotype Genetic Correlation") + ylab("p2") 
+
+ASD.MC.rg.vis
+
+```
+
+```{r visualisation of the genetic correlation between ASD and sex stratified ASD GWAS}
+ASD.sex.rg <- fread(here("Supplement/Genetic Correlation between unstratified and stratified ASD.txt"))
+ASD.sex.rg$genetic_correlation_pair <- gsub(".sumstats", "", ASD.sex.rg$genetic_correlation_pair)
+ASD.sex.rg$genetic_correlation_pair <- gsub("raw", "", ASD.sex.rg$genetic_correlation_pair)
+ASD.sex.rg$genetic_correlation_pair <- gsub("_", "vs", ASD.sex.rg$genetic_correlation_pair)
+ASD.sex.rg$genetic_correlation_pair <- gsub("ASDf", "fASD", ASD.sex.rg$genetic_correlation_pair)
+ASD.sex.rg$genetic_correlation_pair <- gsub("ASDm", "mASD", ASD.sex.rg$genetic_correlation_pair)
+
+ASD.sex.rg$CI <- ASD.sex.rg$se*1.96 # Add CI
+
+ASD.sex.rg$p.label <- ifelse(ASD.sex.rg$p<0.05, "*", NA) 
+ASD.sex.rg$p.label <- ifelse(ASD.sex.rg$p<0.01, "**", ASD.sex.rg$p.label)
+ASD.sex.rg$p.label <- ifelse(ASD.sex.rg$p<0.001, "***", ASD.sex.rg$p.label)
+
+ASD.sex.rg.vis <- ggplot(ASD.sex.rg, aes(x = rg, y = genetic_correlation_pair, xmin = rg-CI, xmax = rg+CI)) + geom_point() + geom_text(aes(label = p.label), vjust = -0.5) + 
+  geom_vline(xintercept=0, color = "grey")+ geom_errorbarh(height = 0.2) + xlim(-1,1.1)
+
+ASD.sex.rg.vis
+```
+

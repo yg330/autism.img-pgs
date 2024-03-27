@@ -4,7 +4,7 @@ author: "Yuanjun Gu"
 date: "2023-05-31"
 output: html_document
 ---
-
+### t and F test between cohort
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse) # General code writing
@@ -19,6 +19,7 @@ library(ggsegGlasser) # For Glasser segmentation specifically, note: ggsegGlasse
 library(car, include.only = 'vif') # for checking colinearity
 library(patchwork) # For adding plots together
 library(ggpubr) # For generating publication ready graphs
+library(openxlsx)
 ```
 
 ```{r UKB, echo=FALSE}
@@ -165,7 +166,370 @@ denICVF <- ggdensity(ALL, x = "ICVF",add = "mean", color = "cohort", fill = "coh
 denICVF
 ```
 
-```{r Regional Pearson Correlation Coefficient between sex and cohorts}
+### Correlation Matrix between cohort
+```{r correlation between regional ABCD and UKB results}
+# Read in file list
+UKB_path.list = list.files(path = here("Result_Table/"), pattern = "UKB_",full.names = TRUE) # Only find saved regional associations)
+UKB_path.list = UKB_path.list[grepl("PGS", UKB_path.list, fixed = TRUE)]
+UKB_path.list = UKB_path.list[!grepl("sig", UKB_path.list, fixed = TRUE)]
+UKB_path.list = UKB_path.list[!grepl("glb", UKB_path.list, fixed = TRUE)]
+UKB_path.list = UKB_path.list[!grepl("tract", UKB_path.list, fixed = TRUE)]
+
+ABCD_path.list = list.files(path = here("Result_Table/"), pattern = "ABCD_", full.names = TRUE)
+ABCD_path.list = ABCD_path.list[grepl("PGS", ABCD_path.list, fixed = TRUE)]
+ABCD_path.list = ABCD_path.list[!grepl("sig", ABCD_path.list, fixed = TRUE)]
+ABCD_path.list = ABCD_path.list[!grepl("glb", ABCD_path.list, fixed = TRUE)]
+
+# Loop and merge to get UKB master sheet for each regression model
+for (i in seq(UKB_path.list)) {
+  sheet_1 = read.xlsx(UKB_path.list[i], sheet = 1)
+  sheet_1$p.adj = p.adjust(sheet_1$p, method = "fdr", n = 180) # adjust p value with multiple correction
+  sheet_2 = read.xlsx(UKB_path.list[i], sheet = 2)
+  sheet_2$p.adj = p.adjust(sheet_2$p, method = "fdr", n = 180)
+  sheet_3 = read.xlsx(UKB_path.list[i], sheet = 3)
+  sheet_3$p.adj = p.adjust(sheet_3$p, method = "fdr", n = 180)
+  sheet_4 = read.xlsx(UKB_path.list[i], sheet = 4)
+  sheet_4$p.adj = p.adjust(sheet_4$p, method = "fdr", n = 180)
+  sheet_5 = read.xlsx(UKB_path.list[i], sheet = 5)
+  sheet_5$p.adj = p.adjust(sheet_5$p, method = "fdr", n = 180)
+  
+  master_sheet = list(sheet_1, sheet_2, sheet_3, sheet_4, sheet_5) %>% reduce(full_join) # Merge into one sheet
+  
+  # Change region name to readable formate for brain visualisation package
+  master_sheet$region <- gsub("_ROI","",as.character(master_sheet$region)) # Remove _ROI
+  master_sheet$region <- gsub("X","",as.character(master_sheet$region)) # Remove X to fit format
+  master_sheet$region <- gsub("ROI","L",as.character(master_sheet$region)) # Replace ROI with L to fit format
+  master_sheet$region <- gsub("\\.","-",as.character(master_sheet$region)) # Replace . as - to fit format
+  
+  master_sheet$sig = ifelse(master_sheet$p.adj<0.05, "sig", "not sig") # Add sig label
+  master_sheet$cohort = "UKB"
+  
+  dataframe_name = gsub(here("Result_Table//"), "", UKB_path.list[i])
+  dataframe_name = gsub(".xlsx", "", dataframe_name)
+  dataframe_name = gsub("UKB/", "UKB_", dataframe_name)
+  assign(dataframe_name, master_sheet)
+}
+
+for (i in 6:7) { # these are numbers corresponding to UKB_path.list[i] with PGS:Sex models
+  sheet_1 = read.xlsx(UKB_path.list[i], sheet = 6)
+  sheet_1$p.adj = p.adjust(sheet_1$p, method = "fdr", n = 180) # adjust p value with multiple correction
+  sheet_2 = read.xlsx(UKB_path.list[i], sheet = 7)
+  sheet_2$p.adj = p.adjust(sheet_2$p, method = "fdr", n = 180)
+  sheet_3 = read.xlsx(UKB_path.list[i], sheet = 8)
+  sheet_3$p.adj = p.adjust(sheet_3$p, method = "fdr", n = 180)
+  sheet_4 = read.xlsx(UKB_path.list[i], sheet = 9)
+  sheet_4$p.adj = p.adjust(sheet_4$p, method = "fdr", n = 180)
+  sheet_5 = read.xlsx(UKB_path.list[i], sheet = 10)
+  sheet_5$p.adj = p.adjust(sheet_5$p, method = "fdr", n = 180)
+  
+  master_sheet = list(sheet_1, sheet_2, sheet_3, sheet_4, sheet_5) %>% reduce(full_join) # Merge into one sheet
+  
+  # Change region name to readable formate for brain visualisation package
+  master_sheet$region <- gsub("_ROI","",as.character(master_sheet$region)) # Remove _ROI
+  master_sheet$region <- gsub("X","",as.character(master_sheet$region)) # Remove X to fit format
+  master_sheet$region <- gsub("ROI","L",as.character(master_sheet$region)) # Replace ROI with L to fit format
+  master_sheet$region <- gsub("\\.","-",as.character(master_sheet$region)) # Replace . as - to fit format
+  
+  master_sheet$sig = ifelse(master_sheet$p.adj<0.05, "sig", "not sig") # Add sig label
+  master_sheet$cohort = "UKB"
+  
+  dataframe_name = gsub(here("Result_Table//"), "", UKB_path.list[i])
+  dataframe_name = gsub(".xlsx", "", dataframe_name)
+  dataframe_name = paste0(dataframe_name, "PGS:Sex")
+  dataframe_name = gsub("UKB/", "UKB_", dataframe_name)
+  assign(dataframe_name, master_sheet)
+}
+
+
+
+
+# Loop and merge to get ABCD master sheet for each regression model
+for (i in seq(ABCD_path.list)) {
+  sheet_1 = read.xlsx(ABCD_path.list[i], sheet = 1)
+  sheet_1$p.adj = p.adjust(sheet_1$p, method = "fdr", n = 180) # adjust p value with multiple correction
+  sheet_2 = read.xlsx(ABCD_path.list[i], sheet = 2)
+  sheet_2$p.adj = p.adjust(sheet_2$p, method = "fdr", n = 180)
+  sheet_3 = read.xlsx(ABCD_path.list[i], sheet = 3)
+  sheet_3$p.adj = p.adjust(sheet_3$p, method = "fdr", n = 180)
+  sheet_4 = read.xlsx(ABCD_path.list[i], sheet = 4)
+  sheet_4$p.adj = p.adjust(sheet_4$p, method = "fdr", n = 180)
+  sheet_5 = read.xlsx(ABCD_path.list[i], sheet = 5)
+  sheet_5$p.adj = p.adjust(sheet_5$p, method = "fdr", n = 180)
+  
+  master_sheet = list(sheet_1, sheet_2, sheet_3, sheet_4, sheet_5) %>% reduce(full_join) # Merge into one sheet
+  
+  # Change region name to readable formate for brain visualisation package
+  master_sheet$region <- gsub("_ROI","",as.character(master_sheet$region)) # Remove _ROI
+  master_sheet$region <- gsub("X","",as.character(master_sheet$region)) # Remove X to fit format
+  master_sheet$region <- gsub("ROI","L",as.character(master_sheet$region)) # Replace ROI with L to fit format
+  master_sheet$region <- gsub("\\.","-",as.character(master_sheet$region)) # Replace . as - to fit format
+  
+  master_sheet$sig = ifelse(master_sheet$p.adj<0.05, "sig", "not sig") # Add sig label
+  master_sheet$cohort = "ABCD"
+  
+  dataframe_name = gsub(here("Result_Table//"), "", ABCD_path.list[i])
+  dataframe_name = gsub(".xlsx", "", dataframe_name)
+  assign(dataframe_name, master_sheet)
+}
+
+for (i in 6:7) { # these are numbers corresponding to ABCD_path.list[i] with PGS:Sex models
+  sheet_1 = read.xlsx(ABCD_path.list[i], sheet = 6)
+  sheet_1$p.adj = p.adjust(sheet_1$p, method = "fdr", n = 180) # adjust p value with multiple correction
+  sheet_2 = read.xlsx(ABCD_path.list[i], sheet = 7)
+  sheet_2$p.adj = p.adjust(sheet_2$p, method = "fdr", n = 180)
+  sheet_3 = read.xlsx(ABCD_path.list[i], sheet = 8)
+  sheet_3$p.adj = p.adjust(sheet_3$p, method = "fdr", n = 180)
+  sheet_4 = read.xlsx(ABCD_path.list[i], sheet = 9)
+  sheet_4$p.adj = p.adjust(sheet_4$p, method = "fdr", n = 180)
+  sheet_5 = read.xlsx(ABCD_path.list[i], sheet = 10)
+  sheet_5$p.adj = p.adjust(sheet_5$p, method = "fdr", n = 180)
+  
+  master_sheet = list(sheet_1, sheet_2, sheet_3, sheet_4, sheet_5) %>% reduce(full_join) # Merge into one sheet
+  
+  # Change region name to readable formate for brain visualisation package
+  master_sheet$region <- gsub("_ROI","",as.character(master_sheet$region)) # Remove _ROI
+  master_sheet$region <- gsub("X","",as.character(master_sheet$region)) # Remove X to fit format
+  master_sheet$region <- gsub("ROI","L",as.character(master_sheet$region)) # Replace ROI with L to fit format
+  master_sheet$region <- gsub("\\.","-",as.character(master_sheet$region)) # Replace . as - to fit format
+  
+  master_sheet$sig = ifelse(master_sheet$p.adj<0.05, "sig", "not sig") # Add sig label
+  master_sheet$cohort = "ABCD"
+  
+  dataframe_name = gsub(here("Result_Table//"), "", ABCD_path.list[i])
+  dataframe_name = gsub(".xlsx", "", dataframe_name)
+  dataframe_name = paste0(dataframe_name, "PGS:Sex")
+  assign(dataframe_name, master_sheet)
+}
+
+remove(sheet_1, sheet_2, sheet_3, sheet_4, sheet_5, master_sheet, dataframe_name, i)
+```
+
+```{r correlation coefficient between cohort}
+SA.cor <- cor.test(UKB_reg.img_PGS[which(UKB_reg.img_PGS$IMG == "SA"),]$beta, ABCD_reg.img_PGS[which(ABCD_reg.img_PGS$IMG == "SA"),]$beta, method = "pearson")
+SA.cor
+
+CT.cor <- cor.test(UKB_reg.img_PGS[which(UKB_reg.img_PGS$IMG == "CT"),]$beta, ABCD_reg.img_PGS[which(ABCD_reg.img_PGS$IMG == "CT"),]$beta, method = "pearson")
+CT.cor
+
+MC.cor <- cor.test(UKB_reg.img_PGS[which(UKB_reg.img_PGS$IMG == "MC"),]$beta, ABCD_reg.img_PGS[which(ABCD_reg.img_PGS$IMG == "MC"),]$beta, method = "pearson")
+MC.cor
+
+ICVF.cor <- cor.test(UKB_reg.img_PGS[which(UKB_reg.img_PGS$IMG == "ICVF"),]$beta, ABCD_reg.img_PGS[which(ABCD_reg.img_PGS$IMG == "ICVF"),]$beta, method = "pearson")
+ICVF.cor
+
+ISOVF.cor <- cor.test(UKB_reg.img_PGS[which(UKB_reg.img_PGS$IMG == "ISOVF"),]$beta, ABCD_reg.img_PGS[which(ABCD_reg.img_PGS$IMG == "ISOVF"),]$beta, method = "pearson")
+ISOVF.cor
+
+```
+
+### Global and Regional association visualisation between cohorts
+```{r Global IncR2 between cohorts}
+# Read in data and label cohort
+UKB.incR2 = read.csv(here("Result_Table/UKB_glb.img_incR2.txt"))
+UKB.incR2$Cohort = "UKB"
+ABCD.incR2 = read.csv(here("Result_Table/ABCD_glb.img_incR2.txt"))
+ABCD.incR2$Cohort = "ABCD"
+
+# Subset data
+UKB.incR2.sex_diff = subset(UKB.incR2, Population != "Unstratified")
+UKB.incR2 = subset(UKB.incR2, Population == "Unstratified")
+
+ABCD.incR2.sex_diff = subset(ABCD.incR2, Population != "Unstratified")
+ABCD.incR2 = subset(ABCD.incR2, Population == "Unstratified")
+
+inc.R2 = full_join(UKB.incR2, ABCD.incR2)
+inc.R2.sex_diff = full_join(UKB.incR2.sex_diff, ABCD.incR2.sex_diff)
+
+# Merge and create barplot
+pub.inc.R2.fig <- ggbarplot(inc.R2, x = "IMG", y = "adj.R2", fill = "association", facet.by = "Cohort") + 
+  scale_fill_manual(values=c("skyblue", "tomato")) + 
+  scale_color_manual(values=c("skyblue", "tomato")) + 
+  labs(y = "Variance explained in %", x = "MRI Phenotype") + scale_y_continuous(labels = scales::comma) + 
+  geom_text(aes(label = Sig.level), col = "black", vjust = -0.1) + geom_hline(yintercept = 0)
+
+pub.inc.R2.fig
+```
+
+```{r Global sex inter and sex specific IncR2 between cohorts, fig.height=5}
+# Read in data and label cohort
+UKB.incR2.sex_int = read.csv(here("Result_Table/UKB_glb.img_incR2.sex.txt"))
+UKB.incR2.sex_int$Cohort = "UKB"
+
+ABCD.incR2.sex_int = read.csv(here("Result_Table/ABCD_glb.img_incR2.sex.txt"))
+ABCD.incR2.sex_int$Cohort = "ABCD"
+
+inc.R2.sex_int = full_join(UKB.incR2.sex_int, ABCD.incR2.sex_int)
+
+# Manipulations for merging sex diff and sex int together
+inc.R2.sex_diff = inc.R2.sex_diff[,c(1:6,9:10,12)] # Remove PGS:Sex related empty columns
+inc.R2.sex_int = inc.R2.sex_int[,c(1:4,7:11)] # Remove none-PGS:Sex columns and rename them
+inc.R2.sex_int = rename(inc.R2.sex_int, "association" = "PGS.Sex.association", "p.val" = "PGS.Sex.p.val", "Sig.level" = "Sig.level.sex")
+
+inc.R2.all_sex = full_join(inc.R2.sex_diff, inc.R2.sex_int)
+
+# Create barplot
+pub.inc.R2.fig.sex <- ggbarplot(inc.R2.all_sex, x = "IMG", y = "adj.R2", fill = "association") + 
+  scale_fill_manual(values=c("skyblue", "tomato")) + 
+  scale_color_manual(values=c("skyblue", "tomato")) + 
+  facet_grid(rows = vars(PGS.Label), cols = vars(Cohort)) +
+  labs(y = "Variance explained in %", x = "MRI Phenotype") + scale_y_continuous(labels = scales::comma) + 
+  geom_hline(yintercept = 0) + 
+  geom_text(aes(label = Sig.level), col = "black", vjust = 0.4)
+
+pub.inc.R2.fig.sex
+
+```
+
+
+```{r Read in and manipulate regional Associations between cohorts for reg associations only}
+reg.img_PGS = full_join(ABCD_reg.img_PGS, UKB_reg.img_PGS)
+```
+
+```{r Visualisation of regional associations, fig.height=8, fig.width=12}
+# By cohort and phenotype
+reg.sig = full_join(UKB_reg.img_PGS, ABCD_reg.img_PGS)
+
+reg.sig.vis = reg.sig %>% group_by(cohort, IMG) %>% ggseg(mapping = aes(fill = beta, col = sig), atlas = "glasser", hemisphere = "right", position = "stacked") + 
+  scale_fill_gradient2(low = "#2E3B79", mid="white",high="#F7B738") + 
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  labs(fill = "PGS beta") + 
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) + guides(col = "none") + facet_grid(rows = vars(IMG), cols = vars(cohort))
+
+plot(reg.sig.vis)
+ggsave(plot = reg.sig.vis, filename = here("Result_Figure/Pub.reg.sig.vis.15032024.pdf"), width = 15, height = 12)
+
+reg.sig.adj = full_join(`UKB_reg.img_PGS+Glb.img`, `ABCD_reg.img_PGS+Glb.img`)
+
+reg.sig.adj.vis = reg.sig.adj %>% group_by(cohort, IMG) %>% ggseg(mapping = aes(fill = beta, col = sig), atlas = "glasser", hemisphere = "right", position = "stacked") + 
+  scale_fill_gradient2(low = "#2E3B79", mid="white",high="#F7B738") + 
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  labs(fill = "PGS beta") + 
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) + guides(col = "none") + facet_grid(rows = vars(IMG), cols = vars(cohort))
+
+plot(reg.sig.adj.vis)
+ggsave(plot = reg.sig.adj.vis, filename = here("Result_Figure/Pub.reg.sig.adj.vis.15032024.pdf"), width = 15, height = 12)
+
+# group_by was nessersary otherwise would also plot NA
+UKB_reg.sig = subset(UKB_reg.img_PGS, IMG == "ICVF" | IMG == "SA")
+ABCD_reg.sig = subset(ABCD_reg.img_PGS, IMG == "ICVF" | IMG == "MC" | IMG == "ISOVF")
+
+UKB_pub.reg.vis = UKB_reg.sig %>% group_by(IMG) %>% ggseg(mapping = aes(fill = beta, col = sig), atlas = "glasser", hemisphere = "right", position = "stacked") + 
+  scale_fill_gradient2(low = "#2E3B79", mid="white",high="#F7B738") + 
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  labs(fill = "PGS beta") + 
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) + guides(col = "none") + facet_grid(rows = vars(IMG))
+
+UKB_pub.reg.vis
+
+
+ABCD_pub.reg.vis = ABCD_reg.sig %>% group_by(IMG) %>% ggseg(mapping = aes(fill = beta, col = sig), atlas = "glasser", hemisphere = "right", position = "stacked") + 
+  scale_fill_gradient2(low = "#2E3B79", mid="white",high="#F7B738") + 
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  labs(fill = "PGS beta") + 
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) + guides(col = "none") + facet_grid(rows = vars(IMG))
+
+ABCD_pub.reg.vis
+
+```
+
+
+### Hubness between cohorts
+```{r hubness}
+reg.path.list = list.files(path = here("Result_Table/"), pattern = "UKB_reg.img_PGS.xlsx" , full.names = TRUE)
+reg.path.list = append(reg.path.list, list.files(path = here("Result_Table/"), pattern = "ABCD_reg.img_PGS.xlsx" , full.names = TRUE))
+
+# Loop and merge to get master sheet for each regression model
+for (i in seq(reg.path.list)) {
+  sheet_1 = read.xlsx(reg.path.list[i], sheet = 1)
+  sheet_1$p.adj = p.adjust(sheet_1$p, method = "fdr", n = 180) # adjust p value with multiple correction
+  sheet_2 = read.xlsx(reg.path.list[i], sheet = 2)
+  sheet_2$p.adj = p.adjust(sheet_2$p, method = "fdr", n = 180)
+  sheet_3 = read.xlsx(reg.path.list[i], sheet = 3)
+  sheet_3$p.adj = p.adjust(sheet_3$p, method = "fdr", n = 180)
+  sheet_4 = read.xlsx(reg.path.list[i], sheet = 4)
+  sheet_4$p.adj = p.adjust(sheet_4$p, method = "fdr", n = 180)
+  sheet_5 = read.xlsx(reg.path.list[i], sheet = 5)
+  sheet_5$p.adj = p.adjust(sheet_5$p, method = "fdr", n = 180)
+  
+  master_sheet = list(sheet_1, sheet_2, sheet_3, sheet_4, sheet_5) %>% reduce(full_join) # Merge into one sheet
+  
+  # Change region name to readable formate for brain visualisation package
+  master_sheet$region <- gsub("_ROI","",as.character(master_sheet$region)) # Remove _ROI
+  master_sheet$region <- gsub("X","",as.character(master_sheet$region)) # Remove X to fit format
+  master_sheet$region <- gsub("ROI","L",as.character(master_sheet$region)) # Replace ROI with L to fit format
+  master_sheet$region <- gsub("\\.","-",as.character(master_sheet$region)) # Replace . as - to fit format
+  
+  master_sheet$sig = ifelse(master_sheet$p.adj<0.05, "sig", "not sig") # Add sig label
+  
+  dataframe_name = gsub(here("Result_Table//"), "", reg.path.list[i])
+  dataframe_name = gsub(".xlsx", "", dataframe_name)
+  assign(dataframe_name, master_sheet)
+}
+remove(sheet_1, sheet_2, sheet_3, sheet_4, sheet_5, master_sheet, dataframe_name, i, reg.path.list)
+
+# Hubness Visualisation
+ABCD_reg.img_PGS$cohort = "ABCD"
+UKB_reg.img_PGS$cohort = "UKB"
+reg.img_PGS = full_join(ABCD_reg.img_PGS, UKB_reg.img_PGS)
+
+hubness = fread(here("Result_Table/genetic_hubness_by_Varun.txt"), drop = "V1")
+hubness = rename("IMG" = "phenotype", "region_n" = "region", "region" = "region_name", hubness)
+
+hubness.vis = merge(reg.img_PGS, hubness, by = c("IMG", "region"))
+hubness.vis$show_region = ifelse(hubness.vis$sig == "sig", hubness.vis$region, NA)
+
+ggscatter(hubness.vis, x = "beta", y = "hubness", add = "reg.line", conf.int = TRUE, cor.coef = TRUE, cor.method = "pearson", 
+          xlab = "PGS beta", ylab = "genetic hubness", size = 1) + geom_point(aes(colour=sig)) + ylim(0,1.5) + 
+  facet_grid(rows = vars(IMG), cols = vars(cohort))
+
+# Extract Exact p value for hubness
+UKB_hubness = subset(hubness.vis, hubness.vis$cohort=="UKB")
+ABCD_hubness = subset(hubness.vis, hubness.vis$cohort=="ABCD")
+
+UKB.SA = cor.test(UKB_hubness$beta[UKB_hubness$IMG == "SA"], UKB_hubness$hubness[UKB_hubness$IMG == "SA"], method = "pearson")
+
+UKB.CT = cor.test(UKB_hubness$beta[UKB_hubness$IMG == "CT"], UKB_hubness$hubness[UKB_hubness$IMG == "CT"], method = "pearson")
+
+UKB.MC = cor.test(UKB_hubness$beta[UKB_hubness$IMG == "MC"], UKB_hubness$hubness[UKB_hubness$IMG == "MC"], method = "pearson")
+
+UKB.ICVF = cor.test(UKB_hubness$beta[UKB_hubness$IMG == "ICVF"], UKB_hubness$hubness[UKB_hubness$IMG == "ICVF"], method = "pearson")
+
+UKB.ISOVF = cor.test(UKB_hubness$beta[UKB_hubness$IMG == "ISOVF"], UKB_hubness$hubness[UKB_hubness$IMG == "ISOVF"], method = "pearson")
+
+UKB.padj = p.adjust(c(UKB.SA$p.value, UKB.CT$p.value, UKB.MC$p.value, UKB.ICVF$p.value, UKB.ISOVF$p.value), method="fdr")
+
+
+
+ABCD.SA = cor.test(ABCD_hubness$beta[ABCD_hubness$IMG == "SA"], ABCD_hubness$hubness[ABCD_hubness$IMG == "SA"], method = "pearson")
+
+ABCD.CT = cor.test(ABCD_hubness$beta[ABCD_hubness$IMG == "CT"], ABCD_hubness$hubness[ABCD_hubness$IMG == "CT"], method = "pearson")
+
+ABCD.MC = cor.test(ABCD_hubness$beta[ABCD_hubness$IMG == "MC"], ABCD_hubness$hubness[ABCD_hubness$IMG == "MC"], method = "pearson")
+
+ABCD.ICVF = cor.test(ABCD_hubness$beta[ABCD_hubness$IMG == "ICVF"], ABCD_hubness$hubness[ABCD_hubness$IMG == "ICVF"], method = "pearson")
+
+ABCD.ISOVF = cor.test(ABCD_hubness$beta[ABCD_hubness$IMG == "ISOVF"], ABCD_hubness$hubness[ABCD_hubness$IMG == "ISOVF"], method = "pearson")
+
+ABCD.padj = p.adjust(c(ABCD.SA$p.value, ABCD.CT$p.value, ABCD.MC$p.value, ABCD.ICVF$p.value, ABCD.ISOVF$p.value), method="fdr")
+
+
+```
+
+```{r publish figure}
+
+pub.hubness.vis = subset(hubness.vis, hubness.vis$IMG %in% c("CT", "ICVF"))
+
+ggscatter(pub.hubness.vis, x = "beta", y = "hubness", add = "reg.line", conf.int = TRUE, cor.coef = TRUE, cor.method = "pearson", 
+          xlab = "PGS beta", ylab = "genetic hubness", size = 1) + geom_point(aes(colour=sig)) + ylim(0,1) + 
+  facet_grid(rows = vars(IMG), cols = vars(cohort))
 
 ```
 

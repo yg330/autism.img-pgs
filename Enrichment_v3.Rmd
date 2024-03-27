@@ -1,0 +1,235 @@
+---
+title: "Enrichment_Eva_Origin_16032024"
+author: "Yuanjun Gu"
+date: "2024-03-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table, include.only = "fread") # Only grab fread function
+library(openxlsx) # For reading in xlsx files
+library(here)
+library(reshape2)
+```
+
+```{r permutation result generation, eval=FALSE, include=FALSE}
+#load function and data for parcellation rotation
+coord <- read.table("https://raw.githubusercontent.com/rb643/rotate_parcellation/master/sphere_HCP.txt", header=F)
+source('https://raw.githubusercontent.com/rb643/rotate_parcellation/master/R/rotate.parcellation.R')
+
+perms <- rotate.parcellation(coord.l = as.matrix(coord[1:180,]), coord.r = as.matrix(coord[181:360,]), nrot = 1000)
+# perms consist of left and right glasser brain regions (180 + 180 rows, 1000 columns)
+
+#save table for later use and referral
+write.table(perms, file = here("Script/perms1000.txt"), sep = "\t")
+```
+
+```{r Yeo and mesulam mapping generation, eval=FALSE, include=FALSE}
+ # !! update if changes made on github !!
+
+# For yeo
+hcp2yeo <- fread("https://raw.githubusercontent.com/ucam-department-of-psychiatry/maps_and_parcs/master/Map2map_Revised/Transform_HCP%2Bsubcort_TO_Yeo2011_7Networks_N1000.csv")[,c(4,5)] # updated map2map csv, only read in label 1 (glasser) and label 2 (yeo7)
+
+colnames(hcp2yeo) = c("lr_region", "network")
+hcp2yeo = hcp2yeo[grep("ROI", hcp2yeo$lr_region),] # grab only glasser defined ROI regions
+
+hcp2yeo$network = recode(hcp2yeo$network, '7Networks_1' = 'Visual', '7Networks_2' = 'Sensory-Motor', 
+                                    '7Networks_3' = 'Dorsal Attention', '7Networks_4' = "Ventral Attention", 
+                                    '7Networks_5' = "Limbic", '7Networks_6' = "Fronto-Parietal", 
+                                    '7Networks_7' = "Default Mode") # replace values for human readability
+hcp2yeo$region = str_sub(hcp2yeo$lr_region,3,-5) # remove left 2 character and right 4 character
+
+# For mesulam
+hcp2mesulam <- read.csv("https://raw.githubusercontent.com/ucam-department-of-psychiatry/maps_and_parcs/master/Map2map_Revised/Transform_HCP%2Bsubcort_TO_mesulam.csv", header=T)[,c(4,5)]
+
+colnames(hcp2mesulam) = c("lr_region", "class")
+hcp2mesulam = hcp2mesulam[grep("ROI", hcp2mesulam$lr_region),] # grab only glasser defined ROI regions
+hcp2mesulam$region = str_sub(hcp2mesulam$lr_region,3,-5) # remove left 2 character and right 4 character
+
+mapping = full_join(hcp2mesulam, hcp2yeo) %>% relocate(region) # move region to first column
+
+write.csv(mapping, here("Script/hcp2yeo&mesulam_2024.txt"), row.names = FALSE)
+```
+
+## Read in and prep datasets
+```{r prequisite datasets}
+perms = read.table(here("Script/perms1000.txt"), header = T) # read in generated parcelation rotation result
+
+mapping = read.csv(here("Script/hcp2yeo&mesulam_2024.txt")) # Updated mapping, now left and right hemisphere of same glasser region can belong to different network
+
+IMG_list = c("SA","CT", "MC", "ICVF", "ISOVF") # loop phenotype list
+Cohort_list = c("UKB", "ABCD") # loop cohort list
+```
+
+```{r read in UKB and ABCD code}
+# Read-in and manipulate Regional Data to fit code
+reg.path.list = list.files(path = here("Result_Table/"), pattern = "UKB_reg.img_PGS.xlsx" , full.names = TRUE)
+reg.path.list = append(reg.path.list, list.files(path = here("Result_Table/"), pattern = "ABCD_reg.img_PGS.xlsx" , full.names = TRUE))
+
+# Loop and merge to get master sheet for each regression model
+for (i in seq(reg.path.list)) {
+  sheet_1 = read.xlsx(reg.path.list[i], sheet = 1)
+  sheet_1$p.adj = p.adjust(sheet_1$p, method = "fdr", n = 180) # adjust p value with multiple correction
+  sheet_2 = read.xlsx(reg.path.list[i], sheet = 2)
+  sheet_2$p.adj = p.adjust(sheet_2$p, method = "fdr", n = 180)
+  sheet_3 = read.xlsx(reg.path.list[i], sheet = 3)
+  sheet_3$p.adj = p.adjust(sheet_3$p, method = "fdr", n = 180)
+  sheet_4 = read.xlsx(reg.path.list[i], sheet = 4)
+  sheet_4$p.adj = p.adjust(sheet_4$p, method = "fdr", n = 180)
+  sheet_5 = read.xlsx(reg.path.list[i], sheet = 5)
+  sheet_5$p.adj = p.adjust(sheet_5$p, method = "fdr", n = 180)
+  
+  master_sheet = list(sheet_1, sheet_2, sheet_3, sheet_4, sheet_5) %>% reduce(full_join) # Merge into one sheet
+  
+  # Change region name to readable formate for brain visualisation package
+  master_sheet$region <- gsub("_ROI","",as.character(master_sheet$region)) # Remove _ROI
+  master_sheet$region <- gsub("X","",as.character(master_sheet$region)) # Remove X to fit format
+  master_sheet$region <- gsub("ROI","L",as.character(master_sheet$region)) # Replace ROI with L to fit format
+  master_sheet$region <- gsub("\\.","-",as.character(master_sheet$region)) # Replace . as - to fit format
+  
+  master_sheet$sig = ifelse(master_sheet$p.adj<0.05, "sig", "not sig") # Add sig label
+  
+  dataframe_name = gsub(here("Result_Table//"), "", reg.path.list[i])
+  dataframe_name = gsub(".xlsx", "", dataframe_name)
+  assign(dataframe_name, master_sheet)
+}
+remove(sheet_1, sheet_2, sheet_3, sheet_4, sheet_5, master_sheet, dataframe_name, i, reg.path.list)
+
+# Manipulate the data frame for enrichment analysis loop
+UKB_reg.img_PGS = UKB_reg.img_PGS[,c("IMG", "region", "beta")] # leave only columns needed for this analysis
+ABCD_reg.img_PGS = ABCD_reg.img_PGS[,c("IMG", "region", "beta")]
+
+```
+
+```{r Yeo find enrichment by compare to premutated results}
+# Will kill any none-hpc computer if run everything in one go, so breaking the loop by cohort and by phenotype
+
+stats_all = NULL
+temp.df = get(x = paste0(Cohort_list[2], "_reg.img_PGS")) # change [] manually
+
+  for (modality in IMG_list[5]) { # change[] manually
+    temp.df.pheno = subset(temp.df, temp.df$IMG == modality) # subset so only phenotype of interest is looped
+    
+    # Combine pls weights with mapping
+    weights_mapping3 = left_join(mapping,temp.df.pheno, by= c("region")) # mapping have 360 l+r regions, same beta will be used for both
+    
+    # Calculate mean PLS weight per class
+    real = weights_mapping3 %>% group_by(network) %>% summarise(mean_weight = mean(beta))
+    
+    # populate the null model by looping through the permuted indices and recomputing the mean
+    null <- real
+    colnames(null) =  c("network","Real")
+    for (i in 1:1000){
+      tempweights = weights_mapping3
+      tempweights$network =  tempweights$network[perms[,i]] # this will change network location, while maintaining same network region n
+      tempnull =  tempweights %>% group_by(network) %>% summarise(mean_tstat = mean(beta))
+      null =  merge(null,tempnull,by='network')
+    }
+    
+    # need some reshaping for plotting
+    null$Real = NULL
+    null =  t(as.matrix(null))
+    colnames(null) =  null[1,]
+    null =  null[-1,]
+    null =  melt(null)
+    colnames(real) =  c("Var2","realvalue")
+    null =  merge(null,real,by='Var2',no.dups = F)
+    null$value =  as.numeric(as.character(null$value))
+    null$modality = modality
+    
+    mu = null %>% group_by(Var2) %>% summarise(meanV = mean(value))
+    std =  null %>% group_by(Var2) %>% summarise(sdV = sd(value))
+    x =  null %>% group_by(Var2) %>% summarise(x = mean(realvalue))
+    
+    z =  left_join(mu,std,by = "Var2")
+    z =  left_join(z,x,by = "Var2")
+    z$z =  (z$x - z$meanV)/z$sdV
+    z$p =  (1-pnorm(abs(z$z)))*2
+    #z = z[z$Var2 %in% c("heteromodal","idiotypic","paralimbic","unimodal"),]
+    z$pfdr = p.adjust(z$p, method = "fdr")
+    z$modality =  modality
+    
+    stats_all =  rbind(stats_all,z)
+    #stats_all$pfdr = p.adjust(stats_all$p, method = "fdr")
+  }
+
+# write.csv(stats_all, file=here("Result_Table/UKB_yeo_Enrichment_SA.txt"))
+# write.csv(stats_all, file=here("Result_Table/UKB_yeo_Enrichment_CT.txt"))
+# write.csv(stats_all, file=here("Result_Table/UKB_yeo_Enrichment_MC.txt"))
+# write.csv(stats_all, file=here("Result_Table/UKB_yeo_Enrichment_ICVF.txt"))
+# write.csv(stats_all, file=here("Result_Table/UKB_yeo_Enrichment_ISOVF.txt"))
+
+# write.csv(stats_all, file=here("Result_Table/ABCD_yeo_Enrichment_SA.txt"))
+# write.csv(stats_all, file=here("Result_Table/ABCD_yeo_Enrichment_CT.txt"))
+# write.csv(stats_all, file=here("Result_Table/ABCD_yeo_Enrichment_MC.txt"))
+# write.csv(stats_all, file=here("Result_Table/ABCD_yeo_Enrichment_ICVF.txt"))
+# write.csv(stats_all, file=here("Result_Table/ABCD_yeo_Enrichment_ISOVF.txt"))
+```
+
+```{r Mesulam find enrichment by compare to premutated results}
+# Will kill any none-hpc computer if run everything in one go, so breaking the loop by cohort and by phenotype
+
+stats_all = NULL
+temp.df = get(x = paste0(Cohort_list[2], "_reg.img_PGS")) # change [] manually, 1= UKB, 2=ABCD
+
+  for (modality in IMG_list[5]) { # change[] manually
+    temp.df.pheno = subset(temp.df, temp.df$IMG == modality) # subset so only phenotype of interest is looped
+    
+    # Combine pls weights with mapping
+    weights_mapping3 = left_join(mapping,temp.df.pheno, by= c("region")) # add left and right hemisphere network/class consideration
+    
+    # Calculate mean PLS weight per class
+    real = weights_mapping3 %>% group_by(class) %>% summarise(mean_weight = mean(beta))
+    
+    # populate the null model by looping through the permuted indices and recomputing the mean
+    null <- real
+    colnames(null) =  c("class","Real")
+    for (i in 1:1000){
+      tempweights = weights_mapping3
+      tempweights$class =  tempweights$class[perms[,i]] # this will change class location, while maintaining same class region n
+      tempnull =  tempweights %>% group_by(class) %>% summarise(mean_tstat = mean(beta))
+      null =  merge(null,tempnull,by='class')
+    }
+    
+    # need some reshaping for plotting
+    null$Real = NULL
+    null =  t(as.matrix(null))
+    colnames(null) =  null[1,]
+    null =  null[-1,]
+    null =  melt(null)
+    colnames(real) =  c("Var2","realvalue")
+    null =  merge(null,real,by='Var2',no.dups = F)
+    null$value =  as.numeric(as.character(null$value))
+    null$modality = modality
+    
+    mu = null %>% group_by(Var2) %>% summarise(meanV = mean(value))
+    std =  null %>% group_by(Var2) %>% summarise(sdV = sd(value))
+    x =  null %>% group_by(Var2) %>% summarise(x = mean(realvalue))
+    
+    z =  left_join(mu,std,by = "Var2")
+    z =  left_join(z,x,by = "Var2")
+    z$z =  (z$x - z$meanV)/z$sdV
+    z$p =  (1-pnorm(abs(z$z)))*2
+
+    z$pfdr = p.adjust(z$p, method = "fdr")
+    z$modality =  modality
+    
+    stats_all =  rbind(stats_all,z)
+
+  }
+
+# write.csv(stats_all, file=here("Result_Table/UKB_mesulam_Enrichment_SA.txt"))
+# write.csv(stats_all, file=here("Result_Table/UKB_mesulam_Enrichment_CT.txt"))
+# write.csv(stats_all, file=here("Result_Table/UKB_mesulam_Enrichment_MC.txt"))
+# write.csv(stats_all, file=here("Result_Table/UKB_mesulam_Enrichment_ICVF.txt"))
+# write.csv(stats_all, file=here("Result_Table/UKB_mesulam_Enrichment_ISOVF.txt"))
+
+# write.csv(stats_all, file=here("Result_Table/ABCD_mesulam_Enrichment_SA.txt"))
+# write.csv(stats_all, file=here("Result_Table/ABCD_mesulam_Enrichment_CT.txt"))
+# write.csv(stats_all, file=here("Result_Table/ABCD_mesulam_Enrichment_MC.txt"))
+# write.csv(stats_all, file=here("Result_Table/ABCD_mesulam_Enrichment_ICVF.txt"))
+# write.csv(stats_all, file=here("Result_Table/ABCD_mesulam_Enrichment_ISOVF.txt"))
+```
+

@@ -1,0 +1,1004 @@
+---
+title: "IMG_PGS_ABCD_v4.Rmd"
+author: "Yuanjun Gu"
+date: "2023-12-11"
+output: html_document
+---
+# Setup
+```{r package load-in, include=FALSE}
+# General Coding
+library(tidyverse) # General code writing
+library(here) # For reproducibility, remember open new project at the pgs_img folder
+library(todor) # For tracking specific comments
+
+# Data processing and statistical analysis
+library(jtools) # For automation of summarizing lm models
+library(huxtable, include.only = 'huxreg') # dependency of export_summ() in jtools package
+library(Hmisc, include.only = 'rcorr') # For correlation matrix generation
+library(ggcorrplot) # For correlation matrix plot
+library(openxlsx) # For exporting linear model summaries and more
+library(data.table, include.only = "fread") # For fast data read-in
+library(car, include.only = 'vif') # For checking colinearity
+
+# Data Visualisation
+library(scales) # For not using scientific notation on publish graph
+library(ggseg) # For brain plot
+library(ggsegGlasser) # For Glasser segmentation specifically
+# NOTE ggsegGlasser is not avaliable for this version of R[4.3.0], downloaded through ggseg r-universe frollowing their github recommendation.
+library(ggsegTracula) # For white tract visualisation
+library(patchwork) # For adding plots together
+library(ggpubr) # For generating publication ready graphs
+```
+```{r ABCD data read-in and clean up and age summary before scaled, echo=FALSE}
+# Note: Age = months, age is 0/1 coded, age_squared = age*age, age_sex was done by age*sex column directly, how age_sexsquared is generated unknown
+# No T1T2 status, No batch ID
+
+Covar <- read.csv(here("QCd_pheno_covar/ABCD/ABCD_allcovariates.txt"), header = T, sep = "\t") # row 10584 - 10589 is NA
+Covar <- drop_na(Covar) # Assume it is normal and delete these rows
+Covar$site_id_l <- gsub("site","", Covar$site_id_l) # delete 'site' to make site number a numeric column
+Covar$site_id_l <- as.numeric(Covar$site_id_l) # change value class as numeric
+
+Pheno <- read.csv(here("QCd_pheno_covar/ABCD/ABCD_corticalpheno.txt"), header = T, sep = " ")  # Miss 20 people in comparison to 10583 in the Covar
+ABCD <- full_join(Covar, Pheno, by = c("FID", "IID")) # merge data that are shared between two datasets
+ABCD <- drop_na(ABCD) # Eliminated all NAs, for more info on why use colSums(is.na(ABCD))
+
+gPCA <- fread(here("QCd_pheno_covar/ABCD/ABCD_PCsforGWAS_European.txt"))
+gPCA <- rename(gPCA, IID = Sample_name) # Change name for merging
+gPCA <- gPCA[,c(1:11)] # Only leave lm model relevant amount of PCAs
+Covar <- full_join(Covar, gPCA, by = "IID") # merge data that are shared between two datasets
+
+ABCD <- full_join(Covar, Pheno, by = c("FID", "IID")) # merge data that are shared between two datasets
+ABCD <- ABCD[, c(1:5, 8:22, 28:30, 32:33)] # leave only relevant phenotypes, ABCD don't have T1T2 status
+
+ABCD$Sex_Cat <-ifelse(ABCD$gender==1, "female", NA) # create new column Sex_Cat for easy grouping in plot with consideration of NA
+ABCD$Sex_Cat <-ifelse(ABCD$gender==0, "male", ABCD$Sex_Cat) 
+
+ABCD <- rename(ABCD, Sex = gender) # Rename For better code translation from UKB to ABCD
+ABCD <- rename(ABCD, Age = interview_age)
+
+# Read-in scores, rename and reformat data set for merging with ABCD
+PGS <- fread(here("PGS/ABCD/autism_unstratified_finalscore.profile"))
+PGS$PGS <- scale(PGS$SCORE) # Scaled numbers
+PGS <- PGS[,c(2, 7)]
+
+fPGS <- fread(here("PGS/ABCD/autism_females_finalscore.profile"))
+fPGS$fPGS <- scale(fPGS$SCORE) # Scaled numbers
+fPGS <- fPGS[,c(2, 7)]
+
+mPGS <- fread(here("PGS/ABCD/autism_males_finalscore.profile"))
+mPGS$mPGS <- scale(mPGS$SCORE) # Scaled numbers
+mPGS <- mPGS[,c(2, 7)]
+
+# Merge PGS, fPGS and mPGS score to ABCD
+ABCD <- list(ABCD, PGS, fPGS, mPGS) %>% reduce(left_join, by= c("IID"))
+ABCD <- drop_na(ABCD)
+
+ABCD$Age = ABCD$Age/12 # Change age into years
+summary(ABCD$Age) # Summary of Age By Month thus we can get summary for age in years before being scaled
+print(paste0("SD for age is ", sd(ABCD$Age)))
+
+remove(Covar, Pheno, gPCA, fPGS, mPGS, PGS) # Remove dataset
+```
+```{r Data Manipulations for easier coding, echo=FALSE}
+# Remove columns that are not in interest
+pgs.img = ABCD[,c(2:29)]
+pgs.img = pgs.img %>% relocate(Sex_Cat, .after = 28)
+
+# Scale All variables
+pgs.img[c(2:27)] <- scale(pgs.img[c(2:27)])
+
+# Rename columns for easier referral and better readability
+pgs.img <- rename(pgs.img, "ICVF" = "NODDI_ICVF", "ISOVF" = "NODDI_ISOVF", "MC" = "meanCurv", 
+                  "gPCA1" = "X1", "gPCA2" = "X2", "gPCA3" = "X3", "gPCA4" = "X4", "gPCA5" = "X5",
+                  "gPCA6" = "X6", "gPCA7" = "X7", "gPCA8" = "X8", "gPCA9" = "X9", "gPCA10" = "X10", "site" = "site_id_l")
+remove(ABCD) # Remove ABCD to keep code run smoother
+```
+```{r create sex stratified population and rescale all continuouse variables, echo=FALSE}
+# Sex Stratification
+fpgs.img <- pgs.img[pgs.img$Sex_Cat == "female", ]
+mpgs.img <- pgs.img[pgs.img$Sex_Cat == "male", ]
+# 2317 are female, and 2611 are male
+
+# Re-scale after sex stratification
+# Exclude Categorical variables: dx, Sex_Cat, FID, IID
+fpgs.img[c(2:27)] <- scale(fpgs.img[c(2:27)])
+mpgs.img[c(2:27)] <- scale(mpgs.img[c(2:27)])
+```
+
+# Diagnosis Checks
+```{r Cohort Description Report}
+# Sex Summary
+table(pgs.img$Sex_Cat)
+```
+```{r Q-Q plot}
+qqnorm(pgs.img$SA, pch = 1, frame = FALSE, ylim = c(-6, 8), main = "Q-Q Plot for SA")
+qqline(pgs.img$SA, col = "steelblue", lwd = 2)
+
+qqnorm(pgs.img$CT, pch = 1, frame = FALSE, ylim = c(-6, 8), main = "Q-Q Plot for CT")
+qqline(pgs.img$CT, col = "steelblue", lwd = 2)
+
+qqnorm(pgs.img$MC, pch = 1, frame = FALSE, ylim = c(-6, 8), main = "Q-Q Plot for MC")
+qqline(pgs.img$MC, col = "steelblue", lwd = 2)
+
+qqnorm(pgs.img$ICVF, pch = 1, frame = FALSE, ylim = c(-6, 8), main = "Q-Q Plot for ICVF")
+qqline(pgs.img$ICVF, col = "steelblue", lwd = 2)
+
+qqnorm(pgs.img$ISOVF, pch = 1, frame = FALSE, ylim = c(-6, 8), main = "Q-Q Plot for ISOVF")
+qqline(pgs.img$ISOVF, col = "steelblue", lwd = 2)
+```
+```{r Density plot, F-test and t-test}
+# F-test
+var.test(SA ~ Sex_Cat, data = pgs.img)
+var.test(CT ~ Sex_Cat, data = pgs.img)
+var.test(MC ~ Sex_Cat, data = pgs.img)
+var.test(ICVF ~ Sex_Cat, data = pgs.img)
+var.test(ISOVF ~ Sex_Cat, data = pgs.img)
+
+# t-test
+t.test(SA ~ Sex_Cat, data = pgs.img)
+t.test(CT ~ Sex_Cat, data = pgs.img)
+t.test(MC ~ Sex_Cat, data = pgs.img)
+t.test(ICVF ~ Sex_Cat, data = pgs.img)
+t.test(ISOVF ~ Sex_Cat, data = pgs.img)
+
+# Density Plot
+# Do not rug in ggdensity(), will exponentially increase rendering time!
+
+den.SA <- ggdensity(pgs.img, x = "SA", add = "mean", color = "Sex_Cat", fill = "Sex_Cat", palette = c("#FF9999", "#00AFBB")) + 
+  xlim(-5,5) + ylim(0.0, 0.6) + labs(fill = "Sex", color = "Sex", x = "Surface Area in SD", caption = "F-test ***; t-test ***")
+
+den.CT <- ggdensity(pgs.img, x = "CT", add = "mean", color = "Sex_Cat", fill = "Sex_Cat", palette = c("#FF9999", "#00AFBB")) + 
+  xlim(-5,5) + ylim(0.0, 0.6) + labs(fill = "Sex", color = "Sex", x = "Cortical Thickness in SD", caption = "F-test Not.Sig, t-test ***")
+
+den.MC <- ggdensity(pgs.img, x = "MC", add = "mean", color = "Sex_Cat", fill = "Sex_Cat", palette = c("#FF9999", "#00AFBB")) +
+  xlim(-5,5) + ylim(0.0, 0.6) + labs(fill = "Sex", color = "Sex", x = "Mean Curvature in SD", caption = "F-test ***, t-test Not.Sig")
+
+den.ICVF <- ggdensity(pgs.img, x = "ICVF", add = "mean", color = "Sex_Cat", fill = "Sex_Cat", palette = c("#FF9999", "#00AFBB")) +
+  xlim(-5,5) + ylim(0.0, 0.6) + labs(fill = "Sex", color = "Sex", x = "Intracellular Volume Fraction in SD", caption = "F-test Not.Sig, t-test ***")
+
+den.ISOVF <- ggdensity(pgs.img, x = "ISOVF", add = "mean", color = "Sex_Cat", fill = "Sex_Cat", palette = c("#FF9999", "#00AFBB")) +
+  xlim(-5,5) + ylim(0.0, 0.6) + labs(fill = "Sex", color = "Sex", x = "Isotropic volume fraction in SD", caption = "F-test Not Sig; t-test Not.Sig")
+
+# <0.05= *, <0.01 = **, <0.001 = *** 
+
+den.SA
+den.CT
+den.MC
+den.ICVF
+den.ISOVF
+```
+
+# Global Correlation Analysis
+```{r IMG Phenotype Global Correlation}
+# All co-variate correlation
+all.cor = cor(pgs.img[,c(5:27)]) # Correlation value
+all.cor.p <- cor_pmat(pgs.img[,c(5:27)]) # P for correlation value
+ggcorrplot(all.cor, p.mat = all.cor.p, tl.cex = 5)
+
+# IMG Phenotype Global Correlation Value plus scaled PGSs for autism
+img.cor = cor(pgs.img[,c("SA", "CT", "MC","ICVF", "ISOVF", "PGS", "mPGS", "fPGS")]) # Correlation value
+img.cor.p <- cor_pmat(pgs.img[,c("SA", "CT", "MC","ICVF", "ISOVF", "PGS", "mPGS", "fPGS")]) # P for correlation value
+ggcorrplot(img.cor, p.mat = img.cor.p, sig.level = 0.05, lab = TRUE)
+```
+
+```{r Publication Correlation Plot, eval=FALSE, include=FALSE}
+pub.cor = img.cor
+pub.cor.p = img.cor.p
+
+# Change colnames and rowname for correlation matrix and p.value matrix to remove _scaled behind polygenic scores 
+colnames(pub.cor) <- c("SA", "CT", "MC", "ICVF", "ISOVF", "PGS", "mPGS", "fPGS")
+rownames(pub.cor) <- c("SA", "CT", "MC", "ICVF", "ISOVF", "PGS", "mPGS", "fPGS")
+colnames(pub.cor.p) <- c("SA", "CT", "MC", "ICVF", "ISOVF", "PGS", "mPGS", "fPGS")
+rownames(pub.cor.p) <- c("SA", "CT", "MC", "ICVF", "ISOVF", "PGS", "mPGS", "fPGS")
+
+pub.cor.fig = ggcorrplot(pub.cor, p.mat = pub.cor.p, sig.level = 0.05, lab = TRUE, type = "lower", insig = "blank") + theme_classic() + 
+  labs(x = NULL, y = NULL) + theme(axis.text.x = element_text(colour = "black")) + theme(axis.text.y = element_text(colour = "black"))
+ggsave(here("Result_Figure/ABCD_correlation matrix.pdf"))
+```
+
+# Global IMG~PGS lm Study
+```{r prep for glb.lm code loops}
+# ABCD have no T1T2 and batch ID
+
+pheno_list = c("SA", "CT", "MC", "ICVF", "ISOVF") # phenotype for looping
+
+lm.img.pgs_list = c("Age", "Age_squared", "gPCA1", "gPCA2", "gPCA3", "gPCA4", "gPCA5", "gPCA6", "gPCA7", "gPCA8", "gPCA9", "gPCA10", 
+                          "site", "leftplusright", "fd_1") # general formula component for all lm hypothesis
+
+# Empty vector to fill in IMG~PGS (or IMG~PGS+Covar) Linear Regression Results
+glb.img.pgs = vector("list", length(pheno_list)) # For IMG~PGS
+glb.img.pgs.sex = vector("list", length(pheno_list)) # For IMG~PGS + PGS:Sex
+glb.m.img.pgs = vector("list", length(pheno_list)) # For male-only population
+glb.f.img.pgs = vector("list", length(pheno_list)) # For female-only population
+
+# Empty vector to fill in IMG~Covar Linear Regression Results to calculate Incremental R2 (Inc.R2)
+glb.img = vector("list", length(pheno_list)) 
+glb.m.img = vector("list", length(pheno_list))
+glb.f.img = vector("list", length(pheno_list))
+```
+
+```{r Global Linear Regression Study}
+# Looping through phenotype for different linear regression hypothesis
+# Don't have T1T2 status thus no differentiation between macro and microstructure
+
+for (i in seq(pheno_list)){
+  # Report Phenotype
+  print(pheno_list[i]) # These are microstructure phenotype, no need add T1T2 as covariate.
+    
+  # Calculate linear regression IMG~PGS
+  # add components unique to each lm hypothesis
+  glb.img.pgs[[i]] = lm(reformulate(c(lm.img.pgs_list, "PGS", "Sex", "Sex*Age", "Sex*Age_squared"), pheno_list[i]), data = pgs.img) 
+  glb.img.pgs.sex[[i]] = lm(reformulate(c(lm.img.pgs_list, "PGS", "Sex", "Sex*Age", "Sex*Age_squared", "PGS*Sex"), pheno_list[i]), data = pgs.img)
+  glb.m.img.pgs[[i]] = lm(reformulate(c(lm.img.pgs_list, "mPGS"), pheno_list[i]), data = mpgs.img)
+  glb.f.img.pgs[[i]] = lm(reformulate(c(lm.img.pgs_list, "fPGS"), pheno_list[i]), data = fpgs.img)
+    
+  # Calculate Linear regression IMG~Covar for Inc.R2
+  glb.img[[i]] = lm(reformulate(c(lm.img.pgs_list, "Sex", "Sex*Age", "Sex*Age_squared"), pheno_list[i]), data = pgs.img)
+  glb.m.img[[i]] = lm(reformulate(c(lm.img.pgs_list), pheno_list[i]), data = mpgs.img)
+  glb.f.img[[i]] = lm(reformulate(c(lm.img.pgs_list), pheno_list[i]), data = fpgs.img)}
+
+
+# Add names for easy referral and better readability
+names(glb.img.pgs) = pheno_list
+names(glb.img.pgs.sex) = pheno_list
+names(glb.m.img.pgs) = pheno_list
+names(glb.f.img.pgs) = pheno_list
+names(glb.img) = pheno_list
+names(glb.m.img) = pheno_list
+names(glb.f.img) = pheno_list
+```
+
+```{r Inc.R2 calculation}
+# Inc.R2 for ISOVF~PGS - ISOVF~Covar
+inc.R2 <- data.frame (IMG  = NA, adj.R2 = NA, PGS.Label = NA, Population = NA, association = NA, p.val = NA, 
+                      PGS.Sex.association = NA, PGS.Sex.p.val = NA) 
+
+# For loop to fill in everything for Inc.R2 table
+for (i in seq(pheno_list)) {
+  # For PGS
+  inc.R2[i,1] = pheno_list[i]
+  inc.R2[i,2] = summary(glb.img.pgs[[i]])$adj.r.squared - summary(glb.img[[i]])$adj.r.squared
+  inc.R2[i,3] = "PGS"
+  inc.R2[i,4] = "Unstratified"
+  inc.R2[i,5] = ifelse(coef(summary(glb.img.pgs[[i]]))["PGS","Estimate"]<0, "negative", "positive")
+  inc.R2[i,6] = coef(summary(glb.img.pgs[[i]]))["PGS","Pr(>|t|)"]
+  
+  # For PGS:Sex
+  inc.R2[i+5,1] = pheno_list[i]
+  inc.R2[i+5,2] = summary(glb.img.pgs.sex[[i]])$adj.r.squared - summary(glb.img.pgs[[i]])$adj.r.squared
+  inc.R2[i+5,3] = "PGS:Sex"
+  inc.R2[i+5,4] = "Unstratified"
+  inc.R2[i+5,5] = ifelse(coef(summary(glb.img.pgs.sex[[i]]))["PGS","Estimate"]<0, "negative", "positive")
+  inc.R2[i+5,6] = coef(summary(glb.img.pgs.sex[[i]]))["PGS","Pr(>|t|)"]
+  inc.R2[i+5,7] = ifelse(coef(summary(glb.img.pgs.sex[[i]]))["PGS:Sex","Estimate"]<0, "negative", "positive")
+  inc.R2[i+5,8] = coef(summary(glb.img.pgs.sex[[i]]))["PGS:Sex","Pr(>|t|)"]
+  
+  # For mPGS
+  inc.R2[i+10,1] = pheno_list[i]
+  inc.R2[i+10,2] = summary(glb.m.img.pgs[[i]])$adj.r.squared - summary(glb.m.img[[i]])$adj.r.squared
+  inc.R2[i+10,3] = "mPGS"
+  inc.R2[i+10,4] = "Male"
+  inc.R2[i+10,5] = ifelse(coef(summary(glb.m.img.pgs[[i]]))["mPGS","Estimate"]<0, "negative", "positive")
+  inc.R2[i+10,6] = coef(summary(glb.m.img.pgs[[i]]))["mPGS","Pr(>|t|)"]
+  
+  # For fPGS
+  inc.R2[i+15,1] = pheno_list[i]
+  inc.R2[i+15,2] = summary(glb.f.img.pgs[[i]])$adj.r.squared - summary(glb.f.img[[i]])$adj.r.squared
+  inc.R2[i+15,3] = "fPGS"
+  inc.R2[i+15,4] = "Female"
+  inc.R2[i+15,5] = ifelse(coef(summary(glb.f.img.pgs[[i]]))["fPGS","Estimate"]<0, "negative", "positive")
+  inc.R2[i+15,6] = coef(summary(glb.f.img.pgs[[i]]))["fPGS","Pr(>|t|)"]
+}
+```
+
+```{r check multiple colinearity}
+for (i in seq(pheno_list)){
+  print(vif(glb.img.pgs[[i]], type = "predictor"))
+  print(vif(glb.img.pgs.sex[[i]], type = "predictor"))
+  print(data.frame(vif(glb.m.img.pgs[[i]])))
+  print(data.frame(vif(glb.f.img.pgs[[i]])))
+}
+```
+
+```{r Global Result Summaries and Data Visualisations}
+# Summary
+glb.img.pgs.summary = vector("list", 5) # empty vector to fill in
+for (i in seq(pheno_list)){
+  model_names = c("~PGS", "~PGS + PGS:Sex", "~mPGS", "~fPGS") # Name Template
+  model_names = c(paste(pheno_list[i], model_names[1:2], sep=""), 
+                  paste("m", pheno_list[i], model_names[3], sep=""), 
+                  paste("f", pheno_list[i], model_names[4], sep="")) # Add IMG phenotype
+  
+  glb.img.pgs.summary[[i]] = export_summs(glb.img.pgs[[i]], glb.img.pgs.sex[[i]], glb.m.img.pgs[[i]], glb.f.img.pgs[[i]],
+                                          model.names = model_names, 
+                                          coefs = c("(Intercept)", "Sex", "Age", "Age^2" = "Age_squared", "Age:Sex", "Age^2:Sex" = "Age_squared:Sex", 
+                                                    "PGS", "fPGS", "mPGS", "PGS:Sex" = "PGS:Sex"))
+}
+
+# Subset inc.R2
+inc.R2.sex = inc.R2[which(inc.R2$PGS.Label == "PGS:Sex"), ] # subset for PGS:Sex
+inc.R2.sex$p.adj = p.adjust(inc.R2.sex$PGS.Sex.p.val, method = "fdr")
+
+inc.R2 = inc.R2[which(inc.R2$PGS.Label != "PGS:Sex"), ] # Exclude PGS:Sex
+
+# Find p.adj
+inc.R2.unstratified = inc.R2[which(inc.R2$PGS.Label == "PGS"), ]
+inc.R2.unstratified$p.adj = p.adjust(inc.R2.unstratified$p.val, method = "fdr")
+
+inc.R2.male = inc.R2[which(inc.R2$PGS.Label == "mPGS"), ] 
+inc.R2.male$p.adj = p.adjust(inc.R2.male$p.val, method = "fdr")
+
+inc.R2.female = inc.R2[which(inc.R2$PGS.Label == "fPGS"), ] 
+inc.R2.female$p.adj = p.adjust(inc.R2.female$p.val, method = "fdr")
+
+inc.R2 = list(inc.R2.unstratified, inc.R2.male, inc.R2.female) %>% reduce(full_join)
+
+# Inc.R2 Visualization
+inc.R2$Sig.level = ifelse(inc.R2$p.adj<0.05, "*", NA) # tag p.adj for PGS significant level
+inc.R2$Sig.level = ifelse(inc.R2$p.adj<0.01, "**", inc.R2$Sig.level)
+inc.R2$Sig.level = ifelse(inc.R2$p.adj<0.001, "***", inc.R2$Sig.level)
+
+inc.R2.sex$Sig.level.sex = ifelse(inc.R2.sex$p.adj<0.05, "*", NA) # tag p.adj for PGS:Sex significant level
+inc.R2.sex$Sig.level.sex = ifelse(inc.R2.sex$p.adj<0.01, "**", inc.R2.sex$Sig.level.sex)
+inc.R2.sex$Sig.level.sex = ifelse(inc.R2.sex$p.adj<0.001, "***", inc.R2.sex$Sig.level.sex)
+
+```
+
+```{r Visualisation Output and save}
+glb.img.pgs.summary
+
+pub.inc.R2.fig <- ggbarplot(inc.R2, x = "IMG", y = "adj.R2", fill = "association", facet.by = "PGS.Label") + scale_fill_manual(values=c("skyblue", "tomato")) +
+  labs(y = "Variance explained in %", x = "MRI Phenotype") + scale_y_continuous(labels = scales::comma) + 
+  geom_text(aes(label = Sig.level), col = "black", vjust = -0.05) + geom_hline(yintercept = 0)
+
+pub.inc.R2.fig
+ggsave(here("Result_Figure/ABCD_inc.R2.pdf"))
+
+pub.inc.R2.sex.fig <- ggbarplot(inc.R2.sex, x = "IMG", y = "adj.R2", fill = "PGS.Sex.association") + 
+  scale_fill_manual(values=c("skyblue", "tomato")) +
+  labs(y = "Variance explained in %", x = "MRI Phenotype") + scale_y_continuous(labels = scales::comma) + 
+  geom_text(aes(label = Sig.level.sex), col = "black", vjust = -0.05) + geom_hline(yintercept = 0)
+
+pub.inc.R2.sex.fig
+ggsave(here("Result_Figure/ABCD_inc.R2.sex.pdf"))
+
+write.xlsx(glb.img.pgs.summary, file = here("Result_Table/ABCD_glb.img_PGS.xlsx"))
+write.csv(inc.R2, file = here("Result_Table/ABCD_glb.img_incR2.txt"), row.names = FALSE)
+write.csv(inc.R2.sex, file = here("Result_Table/ABCD_glb.img_incR2.sex.txt"), row.names = FALSE)
+```
+
+# Regional IMG~PGS lm Study
+TODO should I re-scale regional raw data for male and female only population? Although it'd probably not make difference in association restuls.
+```{r read in raw regional data for all IMG phenotype, eval=FALSE, include=FALSE}
+# Remove load-in object for memory
+rm(list= ls()[!(ls() %in% c('pgs.img','fpgs.img', "mpgs.img", "pheno_list", "lm.img.pgs_list"))])
+
+# Read in raw regional IMG data
+Raw.SA <- read.csv(here("QCd_pheno_covar/ABCD/SA_regional.txt"), header = T, sep = " ")
+Raw.CT <- read.csv(here("QCd_pheno_covar/ABCD/CT_regional.txt"), header = T, sep = " ")
+Raw.MC <- read.csv(here("QCd_pheno_covar/ABCD/meancurv_regional.txt"), header = T, sep = " ")
+Raw.ICVF <- read.csv(here("QCd_pheno_covar/ABCD/ICVF_regional.txt"), header = T, sep = " ")
+Raw.ISOVF <- read.csv(here("QCd_pheno_covar/ABCD/ISOVF_regional.txt"), header = T, sep = " ")
+
+Raw.master = list("SA" = Raw.SA, "CT" = Raw.CT, "MC" = Raw.MC, "ICVF" = Raw.ICVF, "ISOVF" = Raw.ISOVF)
+remove(Raw.SA, Raw.CT, Raw.MC, Raw.ICVF, Raw.ISOVF)
+
+# Create empty vectors for loop
+reg.img.raw = vector("list", 5)
+reg.m.img.raw = vector("list", 5)
+reg.f.img.raw = vector("list", 5)
+
+# merge raw data groups
+for (i in seq(pheno_list)) {
+  print(names(Raw.master)[[i]])
+  reg.img.raw[[i]] = list(pgs.img, Raw.master[[i]]) %>% reduce(left_join, by= c("IID"))
+  reg.m.img.raw[[i]] = list(mpgs.img, Raw.master[[i]]) %>% reduce(left_join, by= c("IID"))
+  reg.f.img.raw[[i]] = list(fpgs.img, Raw.master[[i]]) %>% reduce(left_join, by= c("IID"))
+}
+
+# For easy referral and readability
+names(reg.img.raw) = pheno_list
+names(reg.m.img.raw) = pheno_list
+names(reg.f.img.raw) = pheno_list
+remove(Raw.master, fpgs.img, mpgs.img, pgs.img) # Merged so no longer needed
+```
+
+```{r create function for grabing Regional lm summaries, eval=FALSE, include=FALSE}
+# Write function to create a pipeline in grabbing PGS/mPGS/fPGS-info from Reg.lm
+# PGS.type have default value but can also be changed to acquire other values of lm
+
+PGS_lm_summ <- function(region_n, phenotype_n, formula, dataset, PGS.type = "PGS"){
+  # Linear Regression
+  tempt.lm = lm(formula, data = dataset)
+  tempt.summ = summary(tempt.lm)
+
+  # Generating necessary info and creating data frame for storing the lm summary
+  region = reg.list[region_n]
+  phenotype = pheno_list[phenotype_n]
+  tempt.df = data.frame(IMG = NA, beta  = NA, p = NA, t = NA, se = NA, r2_adjusted = NA, region = NA)
+
+  # Creating dataset[size: 1,7] that can be added row by row through loop
+  tempt.df$IMG = phenotype
+  tempt.df$region = region
+  tempt.df$beta = tempt.summ$coefficients[PGS.type,"Estimate"]
+  tempt.df$p = tempt.summ$coefficients[PGS.type,"Pr(>|t|)"]
+  tempt.df$t = tempt.summ$coefficients[PGS.type,"t value"]
+  tempt.df$se = tempt.summ$coefficients[PGS.type,"Std. Error"]
+  tempt.df$r2_adjusted = tempt.summ$adj.r.squared
+
+  # Output
+  print(tempt.df)
+}
+
+```
+
+```{r loop code for lm models, eval=FALSE, include=FALSE}
+# get ready for looping
+reg.list = colnames(reg.img.raw$SA[,c(30:209)])
+n_regions = length(reg.list) # Glasser region numbers
+loop.df = data.frame(IMG = character(), beta  = numeric(), p = numeric(), t = numeric(), se = numeric(), r2_adjusted = numeric(), region = character())
+
+# Create empty master lists
+reg.img.pgs = rep(list(loop.df), 5)
+reg.img.glb.pgs = rep(list(loop.df), 5)
+reg.m.img.pgs = rep(list(loop.df), 5)
+reg.m.img.glb.pgs = rep(list(loop.df), 5)
+reg.f.img.pgs = rep(list(loop.df), 5)
+reg.f.img.glb.pgs = rep(list(loop.df), 5)
+reg.img.pgs.sex = rep(list(loop.df), 10) # Because we're stacking dataframe with PGS_scaled and PGS:Sex info within the same list
+reg.img.pgs.glb.sex = rep(list(loop.df), 10) # Because we're stacking dataframe with PGS_scaled and PGS:Sex info within the same list
+
+# Loop for regional association tests (None-cluster Computer will die if multiple model runs at the same time, thus breaking down to smaller chunks)
+
+# For Reg.img~PGS
+for (i in seq(pheno_list)){
+  for (j in 1:180){
+      # Report progress
+      print(paste0("Currently working on phenotype ", pheno_list[i], " for brain region ", reg.list[j]))
+      # For Reg.img~PGS
+      form = reformulate(c(lm.img.pgs_list, "PGS", "Sex", "Sex*Age", "Sex*Age_squared"), reg.list[j])
+      result = PGS_lm_summ(j, i, form, reg.img.raw[[i]]) # Read {r create function for grabbing regional lm summaries} for more details
+      reg.img.pgs[[i]][j,] = result
+  }
+}
+
+write.xlsx(reg.img.pgs, file = here("Result_Table/ABCD_reg.img_PGS.xlsx"))
+
+# For Reg.img~PGS+Glb.img
+for (i in seq(pheno_list)){
+  for (j in 1:180){
+      # Report progress
+      print(paste0("Currently working on phenotype ", pheno_list[i], " for brain region ", reg.list[j]))
+      # For Reg.img~PGS
+      form = reformulate(c(lm.img.pgs_list, "PGS", "Sex", "Sex*Age", "Sex*Age_squared", pheno_list[i]), reg.list[j])
+      result = PGS_lm_summ(j, i, form, reg.img.raw[[i]]) # Read {r create function for grabbing regional lm summaries} for more details
+      reg.img.glb.pgs[[i]][j,] = result
+  }
+}
+
+write.xlsx(reg.img.glb.pgs, file = here("Result_Table/ABCD_reg.img_PGS+Glb.img.xlsx"))
+
+# For male only population: mReg.img~mPGS
+for (i in seq(pheno_list)){
+  for (j in 1:180){
+      # Report progress
+      print(paste0("Currently working on phenotype ", pheno_list[i], " for brain region ", reg.list[j]))
+      # For male only m.Reg.img~mPGS
+      form = reformulate(c(lm.img.pgs_list, "mPGS"), reg.list[j])
+      result = PGS_lm_summ(j, i, form, reg.m.img.raw[[i]], PGS.type = "mPGS") # specify the function to not use default PGS.type value
+      reg.m.img.pgs[[i]][j,] = result
+  }
+}
+
+write.xlsx(reg.m.img.pgs, file = here("Result_Table/ABCD_m.reg.img_mPGS.xlsx"))
+
+# For male only population: mReg.img~mPGS+mGlb.img
+for (i in seq(pheno_list)){
+  for (j in 1:180){
+      # Report progress
+      print(paste0("Currently working on phenotype ", pheno_list[i], " for brain region ", reg.list[j]))
+      # For male only m.Reg.img~mPGS
+      form = reformulate(c(lm.img.pgs_list, "mPGS", pheno_list[i]), reg.list[j])
+      result = PGS_lm_summ(j, i, form, reg.m.img.raw[[i]], PGS.type = "mPGS") # specify the function to not use default PGS.type value
+      reg.m.img.glb.pgs[[i]][j,] = result
+  }
+}
+
+write.xlsx(reg.m.img.glb.pgs, file = here("Result_Table/ABCD_m.reg.img_mPGS+Glb.img.xlsx"))
+
+# For female only population: fReg.img~fPGS
+for (i in seq(pheno_list)){
+  for (j in 1:180){
+      # Report progress
+      print(paste0("Currently working on phenotype ", pheno_list[i], " for brain region ", reg.list[j]))
+      # For female only f.Reg.img~fPGS
+      form = reformulate(c(lm.img.pgs_list, "fPGS"), reg.list[j])
+      result = PGS_lm_summ(j, i, form, reg.f.img.raw[[i]], PGS.type = "fPGS") # specify the function to not use default PGS.type value
+      reg.f.img.pgs[[i]][j,] = result
+  }
+}
+
+write.xlsx(reg.f.img.pgs, file = here("Result_Table/ABCD_f.reg.img_fPGS.xlsx"))
+
+# For female only population: fReg.img~fPGS+fGlb.img
+for (i in seq(pheno_list)){
+  for (j in 1:180){
+      # Report progress
+      print(paste0("Currently working on phenotype ", pheno_list[i], " for brain region ", reg.list[j]))
+      # For female only f.Reg.img~fPGS
+      form = reformulate(c(lm.img.pgs_list, "fPGS", pheno_list[i]), reg.list[j])
+      result = PGS_lm_summ(j, i, form, reg.f.img.raw[[i]], PGS.type = "fPGS") # specify the function to not use default PGS.type value
+      reg.f.img.glb.pgs[[i]][j,] = result
+  }
+}
+
+write.xlsx(reg.f.img.glb.pgs, file = here("Result_Table/ABCD_f.reg.img_fPGS+Glb.img.xlsx"))
+
+
+# For Reg.img~PGS+PGS:Sex
+for (i in seq(pheno_list)){
+  for (j in 1:180){
+      # Report progress
+      print(paste0("Currently working on phenotype ", pheno_list[i], " for brain region ", reg.list[j]))
+      # For Reg.img~PGS
+      form = reformulate(c(lm.img.pgs_list, "PGS", "Sex", "Sex*Age", "Sex*Age_squared", "PGS*Sex"), reg.list[j])
+      result = PGS_lm_summ(j, i, form, reg.img.raw[[i]]) # Read {r create function for grabbing regional lm summaries} for more details
+      result.sex = PGS_lm_summ(j, i, form, reg.img.raw[[i]], PGS.type = "PGS:Sex")
+      reg.img.pgs.sex[[i]][j,] = result
+      reg.img.pgs.sex[[i+5]][j,] = result.sex
+  }
+}
+
+write.xlsx(reg.img.pgs.sex, file = here("Result_Table/ABCD_reg.img_PGS_sex.xlsx"))
+
+# For Reg.img~PGS+PGS:Sex+Glb.img
+for (i in seq(pheno_list)){
+  for (j in 1:180){
+      # Report progress
+      print(paste0("Currently working on phenotype ", pheno_list[i], " for brain region ", reg.list[j]))
+      # For Reg.img~PGS
+      form = reformulate(c(lm.img.pgs_list, "PGS", "Sex", "Sex*Age", "Sex*Age_squared", "PGS*Sex", pheno_list[i]), reg.list[j])
+      result = PGS_lm_summ(j, i, form, reg.img.raw[[i]]) # Read {r create function for grabbing regional lm summaries} for more details
+      result.sex = PGS_lm_summ(j, i, form, reg.img.raw[[i]], PGS.type = "PGS:Sex")
+      reg.img.pgs.glb.sex[[i]][j,] = result
+      reg.img.pgs.glb.sex[[i+5]][j,] = result.sex
+  }
+}
+
+write.xlsx(reg.img.pgs.glb.sex, file = here("Result_Table/ABCD_reg.img_PGS_sex+Glb.img.xlsx"))
+
+#COMBAK If Reviewer wants to use Volume for global correction, you can generate that by replacing pheno_list[i] to "Vol" in the Glb.formulas.
+```
+
+```{r loop code for no-PGS lm models for IncR2, eval=FALSE, include=FALSE}
+reg.list = colnames(reg.img.raw$SA[,c(30:209)])
+n_regions = length(reg.list) # Glasser region numbers
+loop.df = data.frame(IMG = character(), r2_adjusted = numeric(), region = character())
+
+# Create empty master lists
+reg.img = rep(list(loop.df), 5)
+reg.img_glb = rep(list(loop.df), 5)
+
+# loop code:
+# For Reg.img~Covar
+for (i in seq(pheno_list)){
+  for (j in 1:180){
+      # Report progress
+      print(paste0("Currently working on phenotype ", pheno_list[i], " for brain region ", reg.list[j]))
+      # For Reg.img~COVAR
+      form = reformulate(c(lm.img.pgs_list, "Sex", "Sex*Age", "Sex*Age_squared"), reg.list[j])
+      result = summary(lm(form, reg.img.raw[[i]]))
+      reg.img[[i]][j,1] = pheno_list[i]
+      reg.img[[i]][j,2] = result$adj.r.squared
+      reg.img[[i]][j,3] = reg.list[j]
+  }
+}
+write.xlsx(reg.img, here("Result_Table/IncR2_ABCD_reg.img.xlsx"))
+
+# For Reg.img~COVAR+Glb.img
+for (i in seq(pheno_list)){
+  for (j in 1:180){
+      # Report progress
+      print(paste0("Currently working on phenotype ", pheno_list[i], " for brain region ", reg.list[j]))
+      # For Reg.img~PGS
+      form = reformulate(c(lm.img.pgs_list, "Sex", "Sex*Age", "Sex*Age_squared", pheno_list[i]), reg.list[j])
+      result = summary(lm(form, reg.img.raw[[i]]))
+      reg.img_glb[[i]][j,1] = pheno_list[i]
+      reg.img_glb[[i]][j,2] = result$adj.r.squared
+      reg.img_glb[[i]][j,3] = reg.list[j]
+  }
+}
+write.xlsx(reg.img_glb, file = here("Result_Table/IncR2_ABCD_reg.img_Glb.xlsx"))
+
+
+
+# For f.Reg.img~Covar and For f.Reg.img~COVAR+Glb.img
+f.reg.img = rep(list(loop.df), 5)
+f.reg.img_glb = rep(list(loop.df), 5)
+
+for (i in seq(pheno_list)){
+  for (j in 1:180){
+      # Report progress
+      print(paste0("Currently working on phenotype ", pheno_list[i], " for brain region ", reg.list[j]))
+      # For Reg.img~COVAR
+      form = reformulate(c(lm.img.pgs_list), reg.list[j])
+      result = summary(lm(form, reg.f.img.raw[[i]]))
+      f.reg.img[[i]][j,1] = pheno_list[i]
+      f.reg.img[[i]][j,2] = result$adj.r.squared
+      f.reg.img[[i]][j,3] = reg.list[j]
+  }
+}
+write.xlsx(f.reg.img, here("Result_Table/IncR2_ABCD_f.reg.img.xlsx"))
+
+# For f.Reg.img~COVAR+Glb.img
+for (i in seq(pheno_list)){
+  for (j in 1:180){
+      # Report progress
+      print(paste0("Currently working on phenotype ", pheno_list[i], " for brain region ", reg.list[j]))
+      # For Reg.img~PGS
+      form = reformulate(c(lm.img.pgs_list, pheno_list[i]), reg.list[j])
+      result = summary(lm(form, reg.f.img.raw[[i]]))
+      f.reg.img_glb[[i]][j,1] = pheno_list[i]
+      f.reg.img_glb[[i]][j,2] = result$adj.r.squared
+      f.reg.img_glb[[i]][j,3] = reg.list[j]
+  }
+}
+write.xlsx(f.reg.img_glb, file = here("Result_Table/IncR2_ABCD_f.reg.img_Glb.xlsx"))
+
+
+
+# For m.Reg.img~Covar and For m.Reg.img~COVAR+Glb.img
+m.reg.img = rep(list(loop.df), 5)
+m.reg.img_glb = rep(list(loop.df), 5)
+
+for (i in seq(pheno_list)){
+  for (j in 1:180){
+      # Report progress
+      print(paste0("Currently working on phenotype ", pheno_list[i], " for brain region ", reg.list[j]))
+      # For Reg.img~COVAR
+      form = reformulate(c(lm.img.pgs_list), reg.list[j])
+      result = summary(lm(form, reg.m.img.raw[[i]]))
+      m.reg.img[[i]][j,1] = pheno_list[i]
+      m.reg.img[[i]][j,2] = result$adj.r.squared
+      m.reg.img[[i]][j,3] = reg.list[j]
+  }
+}
+write.xlsx(m.reg.img, here("Result_Table/IncR2_ABCD_m.reg.img.xlsx"))
+
+# For m.Reg.img~COVAR+Glb.img
+for (i in seq(pheno_list)){
+  for (j in 1:180){
+      # Report progress
+      print(paste0("Currently working on phenotype ", pheno_list[i], " for brain region ", reg.list[j]))
+      # For Reg.img~PGS
+      form = reformulate(c(lm.img.pgs_list, pheno_list[i]), reg.list[j])
+      result = summary(lm(form, reg.m.img.raw[[i]]))
+      m.reg.img_glb[[i]][j,1] = pheno_list[i]
+      m.reg.img_glb[[i]][j,2] = result$adj.r.squared
+      m.reg.img_glb[[i]][j,3] = reg.list[j]
+  }
+}
+write.xlsx(m.reg.img_glb, file = here("Result_Table/IncR2_ABCD_m.reg.img_Glb.xlsx"))
+
+```
+
+```{r read-in and manipulate result tables}
+# Read in multiple tables to create master table for brain visulaisation
+reg.path.list = list.files(path = here("Result_Table/"), pattern = "ABCD",full.names = TRUE) # Only find saved regional associations
+reg.path.list = reg.path.list[grepl("reg.img", reg.path.list, fixed = TRUE)]
+reg.path.list = reg.path.list[grepl("PGS", reg.path.list)]
+reg.path.list = reg.path.list[grepl(".xlsx", reg.path.list)]
+
+# Loop and merge to get master sheet for each regression model
+for (i in seq(reg.path.list)) {
+  sheet_1 = read.xlsx(reg.path.list[i], sheet = 1)
+  sheet_1$p.adj = p.adjust(sheet_1$p, method = "fdr", n = 180) # adjust p value with multiple correction
+  sheet_2 = read.xlsx(reg.path.list[i], sheet = 2)
+  sheet_2$p.adj = p.adjust(sheet_2$p, method = "fdr", n = 180)
+  sheet_3 = read.xlsx(reg.path.list[i], sheet = 3)
+  sheet_3$p.adj = p.adjust(sheet_3$p, method = "fdr", n = 180)
+  sheet_4 = read.xlsx(reg.path.list[i], sheet = 4)
+  sheet_4$p.adj = p.adjust(sheet_4$p, method = "fdr", n = 180)
+  sheet_5 = read.xlsx(reg.path.list[i], sheet = 5)
+  sheet_5$p.adj = p.adjust(sheet_5$p, method = "fdr", n = 180)
+  
+  master_sheet = list(sheet_1, sheet_2, sheet_3, sheet_4, sheet_5) %>% reduce(full_join) # Merge into one sheet
+  
+  # Change region name to readable formate for brain visualisation package
+  master_sheet$region <- gsub("X","",as.character(master_sheet$region)) # Remove X to fit format
+  master_sheet$region <- gsub("\\.","-",as.character(master_sheet$region)) # Replace . as - to fit format
+  
+  master_sheet$sig = ifelse(master_sheet$p.adj<0.05, "sig", "not sig") # Add sig label
+  
+  dataframe_name = gsub(here("Result_Table//"), "", reg.path.list[i])
+  dataframe_name = gsub(".xlsx", "", dataframe_name)
+  assign(dataframe_name, master_sheet)
+}
+
+for (i in 6:7) { # these are numbers corresponding to reg.path.list[i] with PGS:Sex models
+  sheet_1 = read.xlsx(reg.path.list[i], sheet = 6)
+  sheet_1$p.adj = p.adjust(sheet_1$p, method = "fdr", n = 180) # adjust p value with multiple correction
+  sheet_2 = read.xlsx(reg.path.list[i], sheet = 7)
+  sheet_2$p.adj = p.adjust(sheet_2$p, method = "fdr", n = 180)
+  sheet_3 = read.xlsx(reg.path.list[i], sheet = 8)
+  sheet_3$p.adj = p.adjust(sheet_3$p, method = "fdr", n = 180)
+  sheet_4 = read.xlsx(reg.path.list[i], sheet = 9)
+  sheet_4$p.adj = p.adjust(sheet_4$p, method = "fdr", n = 180)
+  sheet_5 = read.xlsx(reg.path.list[i], sheet = 10)
+  sheet_5$p.adj = p.adjust(sheet_5$p, method = "fdr", n = 180)
+  
+  master_sheet = list(sheet_1, sheet_2, sheet_3, sheet_4, sheet_5) %>% reduce(full_join) # Merge into one sheet
+  
+  # Change region name to readable formate for brain visualisation package
+  master_sheet$region <- gsub("X","",as.character(master_sheet$region)) # Remove X to fit format
+  master_sheet$region <- gsub("\\.","-",as.character(master_sheet$region)) # Replace . as - to fit format
+  
+  master_sheet$sig = ifelse(master_sheet$p.adj<0.05, "sig", "not sig") # Add sig label
+  
+  dataframe_name = gsub(here("Result_Table//"), "", reg.path.list[i])
+  dataframe_name = gsub(".xlsx", "", dataframe_name)
+  dataframe_name = paste0(dataframe_name, "PGS:Sex")
+  assign(dataframe_name, master_sheet)
+}
+
+remove(sheet_1, sheet_2, sheet_3, sheet_4, sheet_5, master_sheet, dataframe_name, i)
+```
+
+```{r Manuscript Glasser Brain Visualisation}
+# subset phenotypes with significance
+sig.reg.img = subset(ABCD_reg.img_PGS, ABCD_reg.img_PGS$IMG == "MC" | ABCD_reg.img_PGS$IMG == "ICVF" | ABCD_reg.img_PGS$IMG == "ISOVF")
+sig.reg.img.glb = subset(`ABCD_reg.img_PGS+Glb.img`, `ABCD_reg.img_PGS_sex+Glb.img`$IMG == "CT" | `ABCD_reg.img_PGS+Glb.img`$IMG == "MC")
+
+sig.reg.img.sex.glb = subset(`ABCD_reg.img_PGS_sex+Glb.imgPGS:Sex`, `ABCD_reg.img_PGS_sex+Glb.imgPGS:Sex`$IMG == "CT")
+
+sig.m.reg.img = subset(ABCD_m.reg.img_mPGS, ABCD_m.reg.img_mPGS$IMG == "ICVF" | ABCD_m.reg.img_mPGS$IMG == "ISOVF")
+sig.m.reg.img.glb = subset(`ABCD_m.reg.img_mPGS+Glb.img`, `ABCD_m.reg.img_mPGS+Glb.img`$IMG == "ISOVF")
+
+pub.reg.vis <- sig.reg.img %>% group_by(IMG) %>% 
+  ggseg(mapping=aes(fill=(beta), col = sig), atlas = "glasser", 
+        hemisphere = "right", position="stacked", size= 0.1) +
+  scale_fill_gradient2(low = "#2E3B79", mid="white",high="#F7B738", na.value = "white") +
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  facet_wrap(~IMG) + labs(fill = "PGS beta") +
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) + guides(col = FALSE)
+
+pub.reg.vis.glb <- sig.reg.img.glb %>% group_by(IMG) %>% 
+  ggseg(mapping=aes(fill=(beta), col = sig), atlas = "glasser", 
+        hemisphere = "right", position="stacked", size= 0.1) +
+  scale_fill_gradient2(low = "#2E3B79", mid="white",high="#F7B738", na.value = "white") +
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  facet_wrap(~IMG) + labs(fill = "PGS beta") +
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) + guides(col = FALSE)
+
+pub.reg.vis
+ggsave(here("Result_Figure/ABCD_reg.img_PGS.pdf"), pub.reg.vis)
+
+pub.reg.vis.glb
+ggsave(here("Result_Figure/ABCD_reg.img_PGS+Glb.pdf"), pub.reg.vis.glb)
+
+pub.reg.vis.sex.glb <- sig.reg.img.sex.glb %>% group_by(IMG) %>% 
+  ggseg(mapping=aes(fill=(beta), col = sig), atlas = "glasser", 
+        hemisphere = "right", position="stacked", size= 0.1) +
+  scale_fill_gradient2(low = "#2E3B79", mid="white",high="#F7B738", na.value = "white") +
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  facet_wrap(~IMG) + labs(fill = "PGS beta") +
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) + guides(col = FALSE)
+
+pub.reg.vis.sex.glb
+ggsave(here("Result_Figure/ABCD_reg.img_PGS+Glb_PGS.Sex.pdf"), pub.reg.vis.sex.glb)
+
+pub.m.reg.vis <- sig.m.reg.img %>% group_by(IMG) %>% 
+  ggseg(mapping=aes(fill=(beta), col = sig), atlas = "glasser", 
+        hemisphere = "right", position="stacked", size= 0.1) +
+  scale_fill_gradient2(low = "#2E3B79", mid="white",high="#F7B738", na.value = "white") +
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  facet_wrap(~IMG) + labs(fill = "PGS beta") +
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) + guides(col = FALSE)
+
+pub.m.reg.vis.glb <- sig.m.reg.img.glb %>% group_by(IMG) %>% 
+  ggseg(mapping=aes(fill=(beta), col = sig), atlas = "glasser", 
+        hemisphere = "right", position="stacked", size= 0.1) +
+  scale_fill_gradient2(low = "#2E3B79", mid="white",high="#F7B738", na.value = "white") +
+  scale_colour_manual(values=c("lightgrey", "red")) +
+  facet_wrap(~IMG) + labs(fill = "PGS beta") +
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) + guides(col = FALSE)
+
+pub.m.reg.vis
+ggsave(here("Result_Figure/ABCD_m.reg.img_PGS.pdf"), plot = pub.m.reg.vis)
+
+pub.m.reg.vis.glb
+ggsave(here("Result_Figure/ABCD_m.reg.img_PGS+Glb.pdf"), plot = pub.m.reg.vis.glb)
+
+
+```
+
+```{r significant Regional Inc.R2 calculation}
+# Find sig.regions
+sig.ABCD_reg.img_PGS = ABCD_reg.img_PGS[which(ABCD_reg.img_PGS$sig == "sig"),]
+sig.ABCD_reg.img_PGS_Glb = `ABCD_reg.img_PGS+Glb.img`[which(`ABCD_reg.img_PGS+Glb.img`$sig == "sig"),]
+
+# For reg.img_PGS
+# For MC
+ABCD_reg.img_MC = read.xlsx(here("Result_Table/IncR2_ABCD_reg.img.xlsx"), sheet = 3)
+ABCD_reg.img_MC$region <- gsub("X","",ABCD_reg.img_MC$region)
+ABCD_reg.img_MC$region <- gsub("\\.","-",ABCD_reg.img_MC$region)
+ABCD_reg.img_MC = rename(ABCD_reg.img_MC, "r2_adjusted_noPGS" = "r2_adjusted")
+
+# For ICVF
+ABCD_reg.img_ICVF = read.xlsx(here("Result_Table/IncR2_ABCD_reg.img.xlsx"), sheet = 4)
+ABCD_reg.img_ICVF$region <- gsub("X","",ABCD_reg.img_ICVF$region)
+ABCD_reg.img_ICVF$region <- gsub("\\.","-",ABCD_reg.img_ICVF$region)
+ABCD_reg.img_ICVF = rename(ABCD_reg.img_ICVF, "r2_adjusted_noPGS" = "r2_adjusted")
+
+# For ISOVF
+ABCD_reg.img_ISOVF = read.xlsx(here("Result_Table/IncR2_ABCD_reg.img.xlsx"), sheet = 5)
+ABCD_reg.img_ISOVF$region <- gsub("X","",ABCD_reg.img_ISOVF$region)
+ABCD_reg.img_ISOVF$region <- gsub("\\.","-",ABCD_reg.img_ISOVF$region)
+ABCD_reg.img_ISOVF = rename(ABCD_reg.img_ISOVF, "r2_adjusted_noPGS" = "r2_adjusted")
+
+# Merge all tables
+ABCD_reg.img = list(ABCD_reg.img_MC, ABCD_reg.img_ICVF, ABCD_reg.img_ISOVF) %>% reduce(full_join)
+sig.ABCD_reg.img_PGS = left_join(sig.ABCD_reg.img_PGS, ABCD_reg.img)
+sig.ABCD_reg.img_PGS$Inc.R2 = sig.ABCD_reg.img_PGS$r2_adjusted - sig.ABCD_reg.img_PGS$r2_adjusted_noPGS
+
+# Get Inc.R2 status by IMG group
+ABCD_IncR2_range = sig.ABCD_reg.img_PGS %>% group_by(IMG) %>% reframe(range = range(Inc.R2))
+
+# For glb.ICVF
+ABCD_reg.img_glb_CT = read.xlsx(here("Result_Table/IncR2_ABCD_reg.img_Glb.xlsx"), sheet = 2)
+ABCD_reg.img_glb_CT$region <- gsub("X","",ABCD_reg.img_glb_CT$region)
+ABCD_reg.img_glb_CT$region <- gsub("\\.","-",ABCD_reg.img_glb_CT$region)
+ABCD_reg.img_glb_CT = rename(ABCD_reg.img_glb_CT, "r2_adjusted_noPGS" = "r2_adjusted")
+ABCD_reg.img_glb_CT = subset(ABCD_reg.img_glb_CT, (ABCD_reg.img_glb_CT$region %in% sig.ABCD_reg.img_PGS_Glb$region))
+
+ABCD_reg.img_glb_MC = read.xlsx(here("Result_Table/IncR2_ABCD_reg.img_Glb.xlsx"), sheet = 3)
+ABCD_reg.img_glb_MC$region <- gsub("X","",ABCD_reg.img_glb_MC$region)
+ABCD_reg.img_glb_MC$region <- gsub("\\.","-",ABCD_reg.img_glb_MC$region)
+ABCD_reg.img_glb_MC = rename(ABCD_reg.img_glb_MC, "r2_adjusted_noPGS" = "r2_adjusted")
+ABCD_reg.img_glb_MC = subset(ABCD_reg.img_glb_MC, (ABCD_reg.img_glb_MC$region %in% sig.ABCD_reg.img_PGS_Glb$region))
+
+ABCD_reg.img_Glb = list(ABCD_reg.img_glb_MC, ABCD_reg.img_glb_CT) %>% reduce(full_join)
+sig.ABCD_reg.img_PGS_Glb = left_join(sig.ABCD_reg.img_PGS_Glb, ABCD_reg.img_Glb)
+sig.ABCD_reg.img_PGS_Glb$Inc.R2 = sig.ABCD_reg.img_PGS_Glb$r2_adjusted - sig.ABCD_reg.img_PGS_Glb$r2_adjusted_noPGS
+
+write.csv(sig.ABCD_reg.img_PGS, file = here("Result_Table/sig.ABCD_reg.img_PGS_list.txt")) # wrote table for MR analysis
+write.csv(sig.ABCD_reg.img_PGS_Glb, file = here("Result_Table/sig.ABCD_reg.img_PGS_Glb_list.txt"))
+```
+
+```{r all Regional Inc.R2 calculation, eval=FALSE, include=FALSE}
+reg.path.list = list.files(path = here("Result_Table/"), pattern = "IncR2_ABCD", full.names = TRUE) # Only find saved regional associations
+
+# Loop and merge to get master sheet for each regression model
+for (i in seq(reg.path.list)) {
+  sheet_1 = read.xlsx(reg.path.list[i], sheet = 1)
+  sheet_2 = read.xlsx(reg.path.list[i], sheet = 2)
+  sheet_3 = read.xlsx(reg.path.list[i], sheet = 3)
+  sheet_4 = read.xlsx(reg.path.list[i], sheet = 4)
+  sheet_5 = read.xlsx(reg.path.list[i], sheet = 5)
+  
+  master_sheet = list(sheet_1, sheet_2, sheet_3, sheet_4, sheet_5) %>% reduce(full_join) # Merge into one sheet
+  
+  # Change region name to readable formate for brain visualisation package
+  master_sheet$region <- gsub("X","",as.character(master_sheet$region)) # Remove X to fit format
+  master_sheet$region <- gsub("\\.","-",as.character(master_sheet$region)) # Replace . as - to fit format
+  master_sheet = rename(master_sheet, "no_PGS_r2" = "r2_adjusted")
+  
+  dataframe_name = gsub(here("Result_Table//"), "", reg.path.list[i])
+  dataframe_name = gsub(".xlsx", "", dataframe_name)
+  assign(dataframe_name, master_sheet)
+}
+
+remove(sheet_1, sheet_2, sheet_3, sheet_4, sheet_5, master_sheet, dataframe_name, i)
+
+# For PGS: UKB_PGS - UKB_COVAR
+ABCD_reg.img_PGS = left_join(ABCD_reg.img_PGS, IncR2_ABCD_reg.img)
+ABCD_reg.img_PGS$Inc.R2 = ABCD_reg.img_PGS$r2_adjusted - ABCD_reg.img_PGS$no_PGS_r2
+
+# write.csv(ABCD_reg.img_PGS, file = here("Result_Table/Supplement_S5.csv"))
+
+# For PGS: UKB_PGS + Glb - UKB_COVAR + Glb
+`ABCD_reg.img_PGS+Glb.img` = left_join(`ABCD_reg.img_PGS+Glb.img`, IncR2_ABCD_reg.img_Glb)
+`ABCD_reg.img_PGS+Glb.img`$Inc.R2 = `ABCD_reg.img_PGS+Glb.img`$r2_adjusted - `ABCD_reg.img_PGS+Glb.img`$no_PGS_r2
+# write.csv(`ABCD_reg.img_PGS+Glb.img`, file = here("Result_Table/Supplement_S7.csv"))
+
+
+
+# For PGS:SEX : UKB_PGS + PGS:SEX - UKB_PGS
+# r2_adjusted is across model so no diff between ...PGS_sex and ...PGS_sexPGS:SEX table - as PGS_sex grabs PGS info and PGS_sexPGS:SEX grabs PGS:SEX info
+`ABCD_reg.img_PGS_sexPGS:Sex`$Inc.R2 = `ABCD_reg.img_PGS_sexPGS:Sex`$r2_adjusted - ABCD_reg.img_PGS$r2_adjusted 
+# write.csv(`ABCD_reg.img_PGS_sexPGS:Sex`, file = here("Result_Table/Supplement_S17.csv"))
+
+# For PGS:SEX : UKB_PGS + PGS:SEX + Glb - UKB_PGS + Glb
+`ABCD_reg.img_PGS_sex+Glb.imgPGS:Sex`$Inc.R2 = `ABCD_reg.img_PGS_sex+Glb.imgPGS:Sex`$r2_adjusted - `ABCD_reg.img_PGS+Glb.img`$r2_adjusted 
+# write.csv(`ABCD_reg.img_PGS_sex+Glb.imgPGS:Sex`, file = here("Result_Table/Supplement_S19.csv"))
+
+
+
+# For mPGS: mUKB_mPGS - mUKB_mCOVAR
+ABCD_m.reg.img_mPGS = left_join(ABCD_m.reg.img_mPGS, IncR2_ABCD_m.reg.img)
+ABCD_m.reg.img_mPGS$Inc.R2 = ABCD_m.reg.img_mPGS$r2_adjusted - ABCD_m.reg.img_mPGS$no_PGS_r2
+# write.csv(ABCD_m.reg.img_mPGS, file = here("Result_Table/Supplement_S9.csv"))
+
+# For mPGS: UKB_mPGS + mGlb - mUKB_mCOVAR + mGlb
+`ABCD_m.reg.img_mPGS+Glb.img` = left_join(`ABCD_m.reg.img_mPGS+Glb.img`, IncR2_ABCD_m.reg.img_Glb)
+`ABCD_m.reg.img_mPGS+Glb.img`$Inc.R2 = `ABCD_m.reg.img_mPGS+Glb.img`$r2_adjusted - `ABCD_m.reg.img_mPGS+Glb.img`$no_PGS_r2
+# write.csv(`ABCD_m.reg.img_mPGS+Glb.img`, file = here("Result_Table/Supplement_S11.csv"))
+
+
+
+# For fPGS: fUKB_fPGS - fUKB_fCOVAR
+ABCD_f.reg.img_fPGS = left_join(ABCD_f.reg.img_fPGS, IncR2_ABCD_f.reg.img)
+ABCD_f.reg.img_fPGS$Inc.R2 = ABCD_f.reg.img_fPGS$r2_adjusted - ABCD_f.reg.img_fPGS$no_PGS_r2
+# write.csv(ABCD_f.reg.img_fPGS, file = here("Result_Table/Supplement_S13.csv"))
+
+# For fPGS: UKB_fPGS + fGlb - fUKB_fCOVAR + fGlb
+`ABCD_f.reg.img_fPGS+Glb.img` = left_join(`ABCD_f.reg.img_fPGS+Glb.img`, IncR2_ABCD_f.reg.img_Glb)
+`ABCD_f.reg.img_fPGS+Glb.img`$Inc.R2 = `ABCD_f.reg.img_fPGS+Glb.img`$r2_adjusted - `ABCD_f.reg.img_fPGS+Glb.img`$no_PGS_r2
+# write.csv(`ABCD_f.reg.img_fPGS+Glb.img`, file = here("Result_Table/Supplement_S15.csv"))
+
+```
+
+# Hubness Analysis
+```{r Hubness Data read in}
+# Description in regards to hubness:
+# This describes how a region effects the size of MRI phenotype in other regions (through correlation test results)
+# hubness dataset is not corrected for global values.
+# hs.g = hubness based on genetic similarity; hs.i = hubness based on structural covariance
+
+hubness = fread(here("QCd_pheno_covar/hubs_sc_gc_subset.txt"))
+hubness = hubness[,c(1,2,4,6)] # modality.x and modality.y is same with modality
+
+# region_number_name.txt is the same with mapping_glasser.txt, therefore no worries using them as reference to unify region column names.
+glasser.region.code = fread(here("Script/mapping_glasser.txt"))
+hubness= rename("S_no"="ROI", hubness)
+
+map = setNames(glasser.region.code$region, glasser.region.code$S_no) # Set up like dictionary so each ROI_no have a corresponding region name
+hubness[,1] = map[unlist(hubness$S_no)] # Replace ROI_no with region name for better merging of the MRI phenotypes
+hubness = rename(hubness, "region" = "S_no", "IMG"= "modality") # rename column for better integration
+```
+
+```{r hubness visualisation}
+hubness.vis = merge(ABCD_reg.img_PGS, hubness, by = c("IMG", "region"))
+hubness.vis$show_region = ifelse(hubness.vis$sig == "sig", hubness.vis$region, NA)
+
+ABCD_hubness_g = ggscatter(hubness.vis, x = "beta", y = "hs_g", add = "reg.line", conf.int = TRUE, cor.coef = TRUE, cor.method = "pearson", xlab = "PGS beta", 
+                           ylab = "genetic hubness", size = 1, facet.by = "IMG") + geom_point(aes(colour=sig))+ ylim(0,1.5)
+ggsave(here("Result_Figure/ABCD_genetic_hubness.pdf"), ABCD_hubness_g)
+
+
+ABCD_hubness_i = ggscatter(hubness.vis, x = "beta", y = "hs_i", add = "reg.line", conf.int = TRUE, cor.coef = TRUE, cor.method = "pearson", 
+          xlab = "PGS beta", ylab = "imaging hubness", size = 1, facet.by = "IMG") + geom_point(aes(colour=sig))+ ylim(0,1.5)
+ggsave(here("Result_Figure/ABCD_imaging_hubness.pdf"), ABCD_hubness_i)
+
+
+# Rest of graph not saved
+ICVF.vis = subset(hubness.vis, IMG == "ICVF")
+ISOVF.vis = subset(hubness.vis, IMG == "ISOVF")
+
+pub.ICVF.vis = ggscatter(ICVF.vis, x = "beta", y = "hs_g", label = "show_region", add = "reg.line", conf.int = TRUE, cor.coef = TRUE, cor.method = "pearson", 
+                         xlab = "PGS beta", ylab = "genetic hubness", size = 1) + 
+  geom_point(aes(colour=sig)) + ylim(0,1.5) + scale_color_manual(values = c("sig" = "tomato", "not sig" = "gray"))
+
+pub.ISOVF.vis = ggscatter(ISOVF.vis, x = "beta", y = "hs_g", label = "show_region", add = "reg.line", conf.int = TRUE, cor.coef = TRUE, cor.method = "pearson", 
+                          xlab = "PGS beta", ylab = "genetic hubness", size = 1) + geom_point(aes(colour=sig)) + ylim(0,1.5) + 
+  scale_color_manual(values = c("sig" = "tomato", "not sig" = "gray"))
+
+ICVF.vis.glasser = ggseg(ICVF.vis, mapping=aes(fill = sig, col = sig), atlas = "glasser", hemisphere = "right", position="stacked", size= 0.1) +
+  scale_colour_manual(values = c("sig" = "tomato", "not sig" = "grey", na.value = "grey")) +
+  scale_fill_manual(values = c("sig" = "tomato", "not sig" = "white", na.value = "white")) +
+  theme(legend.position = "right", axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(),
+        strip.text.x = element_text(size = 14)) + guides(col = FALSE)
+
+ICVF.vis.glasser
+```

@@ -1,0 +1,862 @@
+---
+title: "Mendelian Randomisation"
+author: "Yuanjun Gu"
+date: "2023-08-28"
+output: html_document
+---
+
+
+# Forward and Reverse MR for Glb.IMG.GWAS and ASD.GWAS
+## Data Read in and preprocessing
+```{r setup}
+# MR Methods
+library(TwoSampleMR)
+library(MRPRESSO)
+# Data Cleaning and Process
+library(tidyverse)
+library(data.table, include.only = "fread")
+library(readxl)
+library(openxlsx)
+# Reproducibility
+library(here)
+```
+```{r Read in SNP data for pheno1: Autism and pheno2: Cortical MRI Imaging Phenotypes}
+# Sig.Glb.IMG.GWAS SNPs - For Forward MR, Glb.IMG as exposure and ASD as outcome
+Glb.IMG.GWAS = read_excel(here("Supplement/IMG_Heritability_SupTable_Varun_2023_Nature_Genetics.xlsx"), 4, skip = 3) # Grabbing global clumped IMG GWAS sumstats
+Glb.IMG.GWAS = Glb.IMG.GWAS[,c(1:8, 15, 16)] # leave only meta-analysed SNPs
+Glb.IMG.GWAS$`Effect allele`[Glb.IMG.GWAS$`Effect allele` == 'Cortical thickness'] <- "CT"
+# rs112388783 and 6:45451088_ct_c had input error in effect allele column that replaced CT to cortical thickness
+Glb.IMG.GWAS = subset(Glb.IMG.GWAS, Glb.IMG.GWAS$Phenotype %in% c("Surface area", "Cortical thickness","Intracellular volume fraction", "Isotropic volume fraction")) # Doesn't include MC as it is not genetically significant.
+
+# All ASD.GWAS SNPs - For Forward MR, Glb.IMG as exposure and ASD as outcome
+ASD.GWAS = fread(here("PGS/Autism GWAS/daner_All_Crude_HRC_cleaned")) # GWAS data, not gender specific
+ASD.GWAS$logOR = log(ASD.GWAS$OR) # Binary trait, so uses log(OR) in place of beta estimates
+
+# Sig.ASD.GWAS SNPs - For Reverse MR, ASD as exposure and Glb.IMG as outcome
+ASD.GWAS.clumped = fread(here("Report/clumped_daner_ASD.clumped"))
+ASD.GWAS.clumped.info = subset(ASD.GWAS, (ASD.GWAS$SNP %in% ASD.GWAS.clumped$SNP)) # Grab stats like eaf from ASD.GWAS
+
+# IMG.GWAS SNPs overlapped with Sig.ASD.GWAS SNPs - For Reverse MR, ASD as exposure and Glb.IMG as outcome
+Glb.IMG.GWAS.reverseMR = fread(here("Report/Glb.IMG.GWAS.merged.reverseMR"), drop = 'V1') 
+
+# Need to skip V1 column as it's row name that shouldn't have been written in the csv file
+# Code for generating this table is in hidden chunk {r Data preprocessing for All Glb.IMG.GWAS SNPs - For Reverse MR}
+```
+
+```{r Clumping for ASD.GWAS to find Sig.ASD.GWAS SNPs For Reverse MR, eval=FALSE, include=FALSE}
+# Clumping using PLINK method
+
+# Recommend doing this on HPC or HPC Rserver as it takes far too long locally.
+# Used PLINK 1.9 as 2.0 doesn't take the code
+
+# Log for code used:
+# module load plink-1.9-gcc-5.4.0-sm3ojoi
+# cd ./rds/hpc-work/
+
+# plink \
+# --bfile ./ldsc_munge/w_hm3.snplist \
+# --clump ./pgs_img/PGS/AutismGWAS/daner_All_Crude_HRC_cleaned \
+# --clump-field P \
+# --clump-p1 0.00000005 \
+# --clump-p2 1 \
+# --clump-r2 0.01 \
+# --clump-kb 1000 \
+# --threads 15 \
+# --out clumped_daner_ASD
+
+# Alternative suggestion using TwoSampleMR:
+# expo_data_clumped = clump_data(exposure_ASD, clump_kb = 1000, clump_r2 = 0.01, clump_p1 = 0.00000005, clump_p2 = 1, pop = "EUR") 
+# This function Uses 1000 Genome EUROPEAN with bi-allelic SNPs with MAF > 0.01; modified to fit Varun's script
+
+```
+```{r Data preprocessing for All Glb.IMG.GWAS SNPs - For Reverse MR, eval=FALSE, include=FALSE}
+# All Glb.IMG.GWAS SNPs - For Reverse MR, ASD as exposure and Glb.IMG as outcome
+IMG.GWAS.list = list.files(here("PGS/IMG GWAS/"), pattern = "meta") # List all raw meta-IMG GWAS sumstats in folder
+
+IMG.GWAS.dict <- c("CT"="Cortical Thickness", "SA"="Surface Area", "FA"="Fractional Anisotropy", 
+                   "Foldingindex"="Folding Index", "Gaussiancurvature"="Gaussian Curvature", 
+                   "ICVF"="Intracellular Volume Fraction", "Intrinsic"="Intrinsic Curvature",
+                   "ISOVF"="Isotropic Volume Fraction", "LGI"="Local Gyrification Index", "MD"="Mean Diffusivity",
+                   "Meancurvature"="Mean Curvature", "OD"="Orientation Dispersion Index",
+                   "Volume"="Volume") # Dictionary for IMG.GWAS corresponding phenotype
+
+for (GWAS in IMG.GWAS.list) {
+ GWAS.location = paste(here("PGS/IMG GWAS/"), GWAS, sep="/")
+ GWAS.name = sub(pattern = '_meta.txt', '', GWAS)
+ assign(GWAS.name, fread(GWAS.location))
+}
+
+for (GWAS in IMG.GWAS.list){
+  GWAS.name = sub(pattern = '_meta.txt', '.GWAS', GWAS)
+  IMG.GWAS.loaded = get(sub(pattern = '_meta.txt', '', GWAS))
+  temp_df = subset(IMG.GWAS.loaded, (IMG.GWAS.loaded$SNP %in% ASD.GWAS.clumped$SNP)) 
+  # As for reverse direction, MR only looks at sig.ASD.GWAS SNPs in IMG.GWAS SNPs, therefore this saves time
+  temp_df$Phenotype = as.character(IMG.GWAS.dict[sub(pattern = '_meta.txt', '', GWAS)])
+  assign(GWAS.name, temp_df)
+}
+
+IMG.GWAS.list.merge = list(CT.GWAS, SA.GWAS, FA.GWAS,Foldingindex.GWAS, Gaussiancurvature.GWAS,
+                           ICVF.GWAS, Intrinsic.GWAS,ISOVF.GWAS, LGI.GWAS, MD.GWAS,
+                           Meancurvature.GWAS, OD.GWAS, Volume.GWAS)
+IMG.GWAS.merged = IMG.GWAS.list.merge %>% reduce(full_join) # N only = 2
+write.csv(IMG.GWAS.merged, file = here("Report/Glb.IMG.GWAS.merged.reverseMR")) # For faster future loading
+
+```
+
+## Forward Direction - Exposure: Glb.IMG Phenotypes and Outcome: ASD
+```{r Data Manipulation for Forward Direction - Exposure: Glb.IMG Phenotypes and Outcome: ASD, include=FALSE}
+# Uses TwoSampleMR package action 2, as it is more conservative and is the overall best option
+
+exposure_IMG = format_data(Glb.IMG.GWAS, type = "exposure",
+                          phenotype_col = "Phenotype",
+                          snp_col = "SNP",
+                          beta_col = "Beta_meta",
+                          se_col = "SE_meta",
+                          effect_allele_col = "Effect allele",
+                          other_allele_col = "Other allele",
+                          pval_col = "P_meta",
+                          min_pval = 1e-200,
+                          chr_col = "Chromosome",
+                          pos_col = "BP")
+
+outcome_ASD = format_data(ASD.GWAS, type = "outcome",
+                          snp_col = "SNP",
+                          beta_col = "logOR",
+                          se_col = "SE",
+                          effect_allele_col = "A1", # Double Check
+                          other_allele_col = "A2", # Double Check
+                          pval_col = "P",
+                          min_pval = 1e-200,
+                          info_col = "INFO",
+                          chr_col = "CHR",
+                          pos_col = "BP",
+                          eaf_col = "FRQ_A_19870") # eaf for A1 for autism population
+
+# Data Harmonisation
+MR_forward_harmonised <- harmonise_data(exposure_IMG, outcome_ASD, action = 2)
+# Try to infer positive strand alleles, using allele frequencies for palindromes (default, conservative)
+
+# Set Sample Size
+MR_forward_harmonised$samplesize.exposure = 36843 # IMG_meta number is the same among phenotypes; ABCD+UKB
+MR_forward_harmonised$samplesize.outcome =  58948  # Daner_ASD_GWAS_unstratified (NCa + NCo)= 58948
+
+# MR Tests
+MR_forward_result = mr(MR_forward_harmonised, method_list=c("mr_ivw", "mr_weighted_median", "mr_egger_regression"))
+
+# Sensitivity Tests
+forward_heterogeneity = mr_heterogeneity(MR_forward_harmonised, method_list = c("mr_ivw", "mr_egger_regression"))
+# mr_weighted_median" don't provide this test
+
+forward_pleiotropy = mr_pleiotropy_test(MR_forward_harmonised) # Tests MR egger intercept
+
+forward_single = mr_singlesnp(MR_forward_harmonised)
+
+forward_leaveoneout = mr_leaveoneout(MR_forward_harmonised)
+
+# MR Plot
+forward_scatter <- mr_scatter_plot(MR_forward_result, MR_forward_harmonised)
+
+#forest plot
+forward_forest = mr_forest_plot(forward_single)
+
+# leave one out plot
+forward_leaveoneout_plot = mr_leaveoneout_plot(forward_leaveoneout)
+
+# Steiger Directionality Test
+# pre-calculating variance (r) using get_r_from_lor(), as Autism was recorded as a binary trait
+MR_forward_harmonised$r.outcome = get_r_from_lor(lor = MR_forward_harmonised$beta.outcome, 
+                                                 af = MR_forward_harmonised$eaf.outcome,
+                                                 ncase = 19870, 
+                                                 ncontrol = 39078,
+                                                 prevalence = 0.0185, 
+                                                 # Assuming Autism prevalence estimate by CDC 2016 - 1 in 54
+                                                 model = 'logit', 
+                                                 # As it is a binary trait population
+                                                 correction = TRUE)
+
+MR_forward_harmonised$r.exposure = get_r_from_pn(MR_forward_harmonised$pval.exposure,
+                                                 MR_forward_harmonised$samplesize.exposure)
+
+forward_direction <- directionality_test(MR_forward_harmonised)
+
+# Pre-calculating r.exposure as package suggested didn't change result conclusion from without pre-calculated r.exposure, so is correction = True/False, it only changed the magnitude.
+```
+
+```{r Forward Direction: MR.Presso, eval=FALSE, include=FALSE}
+# Single-variate MRpresso Model
+# Remove IMG phenotype with nsnp <5 to run without error
+
+MRpresso_forward_result = run_mr_presso(MR_forward_harmonised, NbDistribution = 1000, SignifThreshold = 0.05)
+names(MRpresso_forward_result)<-attr(MRpresso_forward_result, "exposure") # Get Name from attribute names
+
+# Create Master Table for MRpresso_forward_result
+temp_data = data.frame(matrix(ncol = 3, nrow = 4))
+colnames(temp_data) <- c('phenotype', "global_pval", "global_RSSobs")
+temp_MR_result = data.frame(matrix(ncol = 4, nrow = 0))
+temp_MR_result_corrected = data.frame(matrix(ncol = 4, nrow = 0))
+
+for (pheno in 1:length(names(MRpresso_forward_result))){
+  phenotype = names(MRpresso_forward_result[pheno])
+  temp_MR_result = rbind(temp_MR_result, 
+                         MRpresso_forward_result[[pheno]]$`Main MR results`[1,c(3:6)])
+  temp_MR_result_corrected = rbind(temp_MR_result_corrected, 
+                                   MRpresso_forward_result[[pheno]]$`Main MR results`[2,c(3:6)])
+  temp_data$phenotype[pheno] = phenotype
+  temp_data$global_pval[pheno] = MRpresso_forward_result[[pheno]]$`MR-PRESSO results`$`Global Test`$Pvalue # These grab result for horizontal pleiotropy
+  temp_data$global_RSSobs[pheno] = MRpresso_forward_result[[pheno]]$`MR-PRESSO results`$`Global Test`$RSSobs # These grab result for horizontal pleiotropy
+}
+
+colnames(temp_MR_result_corrected) <- c("Causal Estimate.corrected", "Sd.corrected", 
+                                          "T-stat.corrected", "P-value.corrected")
+# temp_MR_result_corrected rows are NA if no outliner is identified
+
+master_MRpresso_forward_result = cbind(temp_data, temp_MR_result, temp_MR_result_corrected) # double checked it is correct
+
+write.csv(master_MRpresso_forward_result, file = here("Result_Table/master_MRpresso_forward_result.txt"))
+```
+
+```{r Report Summary for Forawrad MR for Glb.IMG Phenotypes and ASD}
+# Multiple testing correction by MRI phenotype number tested
+MR_forward_result.ivw = subset(MR_forward_result, MR_forward_result$method == "Inverse variance weighted")
+MR_forward_result.ivw$p.adj = p.adjust(MR_forward_result.ivw$pval, method = "fdr")
+
+MR_forward_result.wm = subset(MR_forward_result, MR_forward_result$method == "Weighted median")
+MR_forward_result.wm$p.adj = p.adjust(MR_forward_result.wm$pval, method = "fdr")
+
+MR_forward_result.egg = subset(MR_forward_result, MR_forward_result$method == "MR Egger")
+MR_forward_result.egg$p.adj = p.adjust(MR_forward_result.egg$pval, method = "fdr")
+
+MR_forward_result =  list(MR_forward_result.ivw, MR_forward_result.wm, MR_forward_result.egg) %>% reduce(full_join)
+
+# Forward MR Result: Assuming all strands are forward
+head(MR_forward_result[order(MR_forward_result$p.adj),], 
+     n = nrow(MR_forward_result[MR_forward_result$p.adj <=0.05,]))
+
+# Forward MR Result: Assuming all strands are forward
+forward_scatter
+
+# Forward Directionality Test
+head(forward_direction[order(forward_direction$steiger_pval),], 
+     n = nrow(forward_direction[forward_direction$steiger_pval<=0.05,]))
+
+# Forward MR Sensitivity Test Results: Assuming all strands are forward
+# Heterogeneity Test
+head(forward_heterogeneity[order(forward_heterogeneity$Q_pval),], 
+     n = nrow(forward_heterogeneity[forward_heterogeneity$Q_pval<=0.05,]))
+# Pleiotropy Test
+head(forward_pleiotropy[order(forward_pleiotropy$pval),], 
+     n = nrow(forward_pleiotropy[forward_pleiotropy$pval<=0.05,]))
+# Single SNP Test
+head(forward_single[order(forward_single$p),], 
+     n = nrow(forward_single[forward_single$p<=0.05,]))
+# Leave One Out Test
+head(forward_leaveoneout[order(forward_leaveoneout$p),], 
+     n = nrow(forward_leaveoneout[forward_leaveoneout$p<=0.05,]))
+
+# Forest Plot
+forward_forest
+
+# Leave One Out Plot
+forward_leaveoneout_plot
+
+# MRpresso_foward results
+MRpresso_foward = fread(here("Result_Table/master_MRpresso_forward_result.txt"), drop = "V1") 
+# V1 is row name and the row name count is binary from 2 (thus 2, 21, 22, ... , 29) due to how temp_MR_result_corrected was filled during the loop that is recorded in {r Forward Direction: MR.Presso}
+
+MRpresso_foward$p.adj = p.adjust(MRpresso_foward$`P-value`, method="fdr") # Multiple testing correction For presso results
+
+head(MRpresso_foward[order(MRpresso_foward$p.adj),], 
+     n = nrow(MRpresso_foward[MRpresso_foward$p.adj<=0.05,]))
+
+# MRpresso_foward global test result for Pleiotropy 
+head(MRpresso_foward[order(MRpresso_foward$`global_pval`),], 
+     n = nrow(MRpresso_foward[MRpresso_foward$`global_pval`<=0.05,]))
+
+write.xlsx(MR_forward_result, file = here("Result_Table/Exp.IMG_Out.ASD_MR_forward.xlsx"))
+```
+Conclusion: 
+A. In forward MR we've observed that: No IMG exposure affects most towards likelihood to ASD Outcome.
+
+B. We've observed in forward MR sensitivity test that:
+  1. There is heterogeneity in: Isotropic volume fraction
+  2. There is no pleiotropy
+  3. Leave one out test and single-SNP test: There are SNPs disproportionately contributing to MR results
+
+C. All direction observed are correct causal direction. (direction test all pairs p< 0.05)
+
+## Reverse Direction - Exposure: ASD and Outcome: Glb.IMG Phenotypes
+```{r Data Manipulation for Reverse Direction - Exposure: ASD and Outcome: Glb.IMG Phenotypes, include=FALSE}
+
+exposure_ASD = format_data(ASD.GWAS.clumped.info, type = "exposure",
+                       snp_col = "SNP",
+                       beta_col = "logOR", # Binary Trait, so it should be log(OR)
+                       se_col = "SE",
+                       effect_allele_col = "A1", # Double Check
+                       other_allele_col = "A2", # Double Check
+                       pval_col = "P",
+                       ncase_col = "NCa",
+                       ncontrol_col = "NCo",
+                       min_pval = 1e-200,
+                       info_col = "INFO",
+                       chr_col = "CHR",
+                       pos_col = "BP",
+                       eaf_col = "FRQ_A_19870")
+
+# Format Data for MR
+
+Glb.IMG.GWAS.reverseMR = subset(Glb.IMG.GWAS.reverseMR, (Glb.IMG.GWAS.reverseMR$Phenotype %in% c("Surface Area", "Cortical Thickness", "Intracellular Volume Fraction", "Isotropic Volume Fraction"))) # keep only sig. phenotype
+
+
+outcome_IMG = format_data(Glb.IMG.GWAS.reverseMR, type = "outcome",
+  phenotype_col = "Phenotype",
+  snp_col = "SNP",
+  beta_col = "BETA",
+  se_col = "SE",
+  effect_allele_col = "A1",
+  other_allele_col = "A2",
+  pval_col = "P",
+  min_pval = 1e-200,
+  chr_col = "CHR",
+  pos_col = "BP")
+
+# Data Harmonisation
+MR_reverse_harmonised <- harmonise_data(exposure_ASD, outcome_IMG, action = 2)
+# Try to infer positive strand alleles, using allele frequencies for palindromes (default, conservative)
+
+# Sample Size
+MR_reverse_harmonised$samplesize.outcome = 36843 # IMG_meta number is the same among phenotypes; ABCD+UKB
+MR_reverse_harmonised$samplesize.exposure =  58948  # Daner_ASD_GWAS_unstratified (NCa + NCo)= 58948
+
+# MR Tests
+MR_reverse_result = mr(MR_reverse_harmonised, method_list=c("mr_ivw", "mr_weighted_median", "mr_egger_regression"))
+
+# Sensitivity Tests
+reverse_heterogeneity = mr_heterogeneity(MR_reverse_harmonised, method_list = c("mr_ivw", "mr_egger_regression"))
+# mr_weighted_median" don't provide this test
+
+reverse_pleiotropy = mr_pleiotropy_test(MR_reverse_harmonised)
+
+reverse_single = mr_singlesnp(MR_reverse_harmonised)
+
+reverse_leaveoneout = mr_leaveoneout(MR_reverse_harmonised)
+
+# MR Plot
+reverse_scatter <- mr_scatter_plot(MR_reverse_result, MR_reverse_harmonised)
+
+#forest plot
+reverse_forest = mr_forest_plot(reverse_single)
+
+# leave one out plot
+reverse_leaveoneout_plot = mr_leaveoneout_plot(reverse_leaveoneout)
+
+# Steiger Directionality Test
+# pre-calculating variance (r) using get_r_from_lor(), as Autism was recorded as a binary trait
+
+# For MR_reverse_harmonised
+MR_reverse_harmonised$r.exposure = get_r_from_lor(lor = MR_reverse_harmonised$beta.exposure, 
+                                                  af = MR_reverse_harmonised$eaf.exposure,
+                                                  ncase = 19870,
+                                                  ncontrol = 39078,
+                                                  prevalence = 0.0185,  
+                                                  # Assuming Autism prevalence estimate by CDC 2016 - 1 in 54
+                                                  model = 'logit', 
+                                                  # As it is a binary trait population
+                                                  correction = TRUE)
+MR_reverse_harmonised$r.outcome = get_r_from_pn(MR_reverse_harmonised$pval.outcome,
+                                                  MR_reverse_harmonised$samplesize.outcome)
+
+reverse_direction <- directionality_test(MR_reverse_harmonised)
+```
+
+```{r Reverse Direction: MR.Presso, eval=FALSE, include=FALSE}
+# Single-variate MRpresso Model
+MRpresso_reverse_result = run_mr_presso(MR_reverse_harmonised, NbDistribution = 1000, SignifThreshold = 0.05)
+names(MRpresso_reverse_result) <- attr(MRpresso_reverse_result, "outcome")
+
+# Create Master Table for MRpresso_reverse_result
+temp_data = data.frame(matrix(ncol = 3, nrow = 4))
+colnames(temp_data) <- c('phenotype', "global_pval", "global_RSSobs")
+temp_MR_result = data.frame(matrix(ncol = 4, nrow = 0))
+temp_MR_result_corrected = data.frame(matrix(ncol = 4, nrow = 0))
+
+for (pheno in 1:length(names(MRpresso_reverse_result))){
+  phenotype = names(MRpresso_reverse_result[pheno])
+  temp_MR_result = rbind(temp_MR_result,
+                         MRpresso_reverse_result[[pheno]]$`Main MR results`[1,c(3:6)])
+  temp_MR_result_corrected = rbind(temp_MR_result_corrected,
+                                   MRpresso_reverse_result[[pheno]]$`Main MR results`[2,c(3:6)])
+  temp_data$phenotype[pheno] = phenotype
+  temp_data$global_pval[pheno] = MRpresso_reverse_result[[pheno]]$`MR-PRESSO results`$`Global Test`$Pvalue
+  temp_data$global_RSSobs[pheno] = MRpresso_reverse_result[[pheno]]$`MR-PRESSO results`$`Global Test`$RSSobs
+}
+
+colnames(temp_MR_result_corrected) <- c("Causal Estimate.corrected", "Sd.corrected", 
+                                          "T-stat.corrected", "P-value.corrected")
+# temp_MR_result_corrected rows are NA if no outliner is identified
+master_MRpresso_reverse_result = cbind(temp_data, temp_MR_result, temp_MR_result_corrected)
+write.csv(master_MRpresso_reverse_result, file = here("Result_Table/master_MRpresso_reverse_result"))
+```
+
+```{r Report Summary for Reverse MR for Glb.IMG Phenotypes and ASD}
+# Multiple testing correction (n=10-12 for each test)
+MR_reverse_result.ivw = subset(MR_reverse_result, MR_reverse_result$method == "Inverse variance weighted")
+MR_reverse_result.ivw$p.adj = p.adjust(MR_reverse_result.ivw$pval, method = "fdr")
+
+MR_reverse_result.wm = subset(MR_reverse_result, MR_reverse_result$method == "Weighted median")
+MR_reverse_result.wm$p.adj = p.adjust(MR_reverse_result.wm$pval, method = "fdr")
+
+MR_reverse_result.egg = subset(MR_reverse_result, MR_reverse_result$method == "MR Egger")
+MR_reverse_result.egg$p.adj = p.adjust(MR_reverse_result.egg$pval, method = "fdr")
+
+MR_reverse_result =  list(MR_reverse_result.ivw, MR_reverse_result.wm, MR_reverse_result.egg) %>% reduce(full_join)
+
+# Forward MR Result: Assuming all strands are forward
+head(MR_reverse_result[order(MR_reverse_result$p.adj),], 
+     n = nrow(MR_reverse_result[MR_reverse_result$p.adj <=0.05,]))
+
+# Reverse MR Result: Assuming all strands are forward
+reverse_scatter
+
+# Reverse Directionality Test
+head(reverse_direction[order(reverse_direction$steiger_pval),], 
+     n = nrow(reverse_direction[reverse_direction$steiger_pval<=0.05,]))
+
+# Reverse MR Sensitivity Test Results: Assuming all strands are forward
+# Heterogeneity Test
+head(reverse_heterogeneity[order(reverse_heterogeneity$Q_pval),], 
+     n = nrow(reverse_heterogeneity[reverse_heterogeneity$Q_pval<=0.05,]))
+# Pleiotropy Test #
+head(reverse_pleiotropy[order(reverse_pleiotropy$pval),], 
+     n = nrow(reverse_pleiotropy[reverse_pleiotropy$pval<=0.05,]))
+# Single SNP Test
+head(reverse_single[order(reverse_single$p),], 
+     n = nrow(reverse_single[reverse_single$p<=0.05,]))
+# Leave One Out Test
+head(reverse_leaveoneout[order(reverse_leaveoneout$p),], 
+     n = nrow(reverse_leaveoneout[reverse_leaveoneout$p<=0.05,]))
+
+# Forest Plot
+reverse_forest
+
+# Leave One Out Plot
+reverse_leaveoneout_plot
+
+# MRpresso_reverse results
+MRpresso_reverse = fread(here("Result_Table/master_MRpresso_reverse_result"), drop='V1') 
+# V1 is row name and the row name count is binary from 2 (thus 2, 21, 22, ... , 29) due to how temp_MR_result_corrected was filled during the loop that is recorded in {r Reverse Direction: MR.Presso}
+
+MRpresso_reverse$p.adj = p.adjust(MRpresso_reverse$`P-value`, method="fdr") # For presso results
+
+head(MRpresso_reverse[order(MRpresso_reverse$p.adj),], 
+     n = nrow(MRpresso_reverse[MRpresso_reverse$p.adj<=0.05,]))
+
+# MRpresso_reverse global test result for Pleiotropy 
+head(MRpresso_reverse[order(MRpresso_reverse$global_pval),], 
+     n = nrow(MRpresso_reverse[MRpresso_reverse$global_pval<=0.05,]))
+
+write.xlsx(MR_reverse_result, file = here("Result_Table/Exp.ASD_Out.IMG_MR_reverse.xlsx"))
+```
+
+##### Warning: All Glb.IMG.GWAS SNPs (which is a meta-analysed GWAS) overlapped with ASD.GWAS (Glb.IMG.GWAS.reverse) is from N=2(ABCD), and is the only entry in All IMG.GWAS. This should be taken into account when interpreting results from reverse direction MR.
+##### Warning: rs524890 is excluded in all reverse MR_2 for being palindromic with intermediate allele frequencies
+
+Conclusion: 
+A. In reverse MR, which removed Sig.ASD.GWAS SNP rs524890, there is no significant correlation after corrected for multiple testing. 
+
+B. We've observed in forward MR sensitivity test that:
+  1. ASD SNPs is heterogeneous in Surface Area.
+  2. ASD SNPs in Surface Area are very pleiotropic according to presso but not other tests.
+  3. Leave one out test and single-SNP test: There are SNPs disproportionately contributing to MR results -> 6/7 snps for ICVF 
+
+D. All direction observed are correct causal direction. (direction test all pairs p< 0.05)
+
+
+# Forward and Reverse MR for Reg.IMG.GWAS and ASD.GWAS
+## Data Read in and preprocessing
+```{r Data Read-in and cleaning for Forward Direction: Sig.Reg.IMG.GWAS with sig.rg with ASD.GWAS}
+rm(list= ls()[!(ls() %in% c('ASD.GWAS','ASD.GWAS.clumped.info', "outcome_ASD", "exposure_ASD"))])
+
+# Sig.Reg.IMG.GWAS SNPs - For Forward MR, Reg.IMG as exposure and ASD as outcome
+key_region_number = fread(here("Script/Region_number_name.txt")) # read in key table
+key_region_number = rename(key_region_number, "region" = "Region name") # rename for better merging
+
+# For UKB
+sig.UKB.region = fread(here("Result_Table/sig.UKB_reg.img_PGS_list.txt"), drop = "V1")
+sig.UKB.region = left_join(sig.UKB.region, key_region_number)
+sig.UKB.region$IMG_region_n = paste(sig.UKB.region$IMG, sig.UKB.region$`Region number`, sep = "_") # Add unique phenotype ID name by MRI and brain region
+
+# For ABCD
+sig.ABCD.region = fread(here("Result_Table/sig.ABCD_reg.img_PGS_list.txt"), drop = "V1")
+sig.ABCD.region = left_join(sig.ABCD.region, key_region_number)
+sig.ABCD.region$IMG_region_n = paste(sig.ABCD.region$IMG, sig.ABCD.region$`Region number`, sep = "_") # Add unique phenotype ID name by MRI and brain region
+
+# For Reg.IMG.GWAS
+Reg.IMG.GWAS = read_excel(here("Supplement/IMG_Heritability_SupTable_Varun_2023_Nature_Genetics.xlsx"), 27, skip = 3) # page S26 = Sig.Reg.IMG.GWAS SNPs
+Reg.IMG.GWAS = Reg.IMG.GWAS[,c(1:8, 15, 16,17)] # leave only meta-analysed SNPs
+Reg.IMG.GWAS$`Effect allele`[Reg.IMG.GWAS$`Effect allele` == 'Cortical thickness'] <- "CT" # Fix typo mistake from original table
+Reg.IMG.GWAS$`Other allele`[Reg.IMG.GWAS$`Other allele` == 'Cortical thickness'] <- "CT" # Fix typo mistake from original table
+
+# Replace IMG full name to shortened name
+Reg.IMG.GWAS = subset(Reg.IMG.GWAS, Reg.IMG.GWAS$phenotype %in% c("Surface area", "Mean curvature",
+                                                                  "Intracellular volume fraction", "Isotropic volume fraction"))
+
+Reg.IMG.GWAS$phenotype = case_match(Reg.IMG.GWAS$phenotype, "Surface area" ~ "SA", "Mean curvature" ~ "MC", "Intracellular volume fraction" ~ "ICVF",
+                                    "Isotropic volume fraction" ~ "ISOVF") # Unify naming for merging
+Reg.IMG.GWAS$IMG_region_n = paste(Reg.IMG.GWAS$phenotype, Reg.IMG.GWAS$region, sep = "_") # For merging
+
+
+Reg.IMG.GWAS.cleaned_UKB = subset(Reg.IMG.GWAS, (Reg.IMG.GWAS$IMG_region_n %in% sig.UKB.region$IMG_region_n)) # For UKB
+Reg.IMG.GWAS.cleaned_ABCD = subset(Reg.IMG.GWAS, (Reg.IMG.GWAS$IMG_region_n %in% sig.ABCD.region$IMG_region_n))# For ABCD
+Reg.IMG.GWAS.cleaned = full_join(Reg.IMG.GWAS.cleaned_UKB, Reg.IMG.GWAS.cleaned_ABCD)
+
+remove(key_region_number, Reg.IMG.GWAS.cleaned_ABCD, Reg.IMG.GWAS.cleaned_UKB, Reg.IMG.GWAS, sig.ABCD.region, sig.UKB.region) # Remove dataframe no longer needed
+
+# Exclude phenotype_region with nsnp<3
+keep.list = table(Reg.IMG.GWAS.cleaned$IMG_region_n)
+keep.list = keep.list[keep.list>2]
+keep.list = rownames(keep.list)
+Reg.IMG.GWAS.cleaned = subset(Reg.IMG.GWAS.cleaned, Reg.IMG.GWAS.cleaned$IMG_region_n %in% keep.list)
+```
+## Forward Direction - Exposure: Reg.IMG Phenotypes and Outcome: ASD
+```{r Data Manipulation for Forward Direction - Exposure: Reg.IMG Phenotypes and Outcome: ASD}
+exposure_Reg.IMG = format_data(Reg.IMG.GWAS.cleaned, type = "exposure",
+                          phenotype_col = "IMG_region_n",
+                          snp_col = "SNP",
+                          beta_col = "Beta_meta",
+                          se_col = "SE_meta",
+                          effect_allele_col = "Effect allele",
+                          other_allele_col = "Other allele",
+                          pval_col = "P_meta",
+                          min_pval = 1e-200,
+                          chr_col = "Chromosome",
+                          pos_col = "Position")
+
+# Don't need to set outcome_ASD as it is already read-in during glb.IMG<->ASD MR analyses
+
+# Data Harmonisation
+Reg.MR_forward_harmonised <- harmonise_data(exposure_Reg.IMG, outcome_ASD, action = 2)
+# Try to infer positive strand alleles, using allele frequencies for palindromes (default, conservative)
+
+# Exclude phenotype_region with nsnp<3
+keep.list = table(Reg.MR_forward_harmonised$exposure)
+keep.list = keep.list[keep.list>2]
+keep.list = rownames(keep.list)
+keep.list = keep.list[!keep.list=="SA_105"] # not sure why but it will only run IVW on this phenotype
+Reg.MR_forward_harmonised = subset(Reg.MR_forward_harmonised, Reg.MR_forward_harmonised$exposure %in% keep.list)
+
+# Set Sample Size
+Reg.MR_forward_harmonised$samplesize.exposure = 36843 # IMG_meta number is the same among phenotypes; ABCD+UKB
+Reg.MR_forward_harmonised$samplesize.outcome =  58948  # Daner_ASD_GWAS_unstratified (NCa + NCo)= 58948
+
+# MR Tests
+Reg.MR_forward_result = mr(Reg.MR_forward_harmonised, method_list=c("mr_ivw", "mr_weighted_median", "mr_egger_regression")) 
+
+
+# Sensitivity Tests
+Reg.forward_heterogeneity = mr_heterogeneity(Reg.MR_forward_harmonised, method_list = c("mr_ivw", "mr_egger_regression")) 
+# mr_weighted_median" don't provide this test
+
+Reg.forward_pleiotropy = mr_pleiotropy_test(Reg.MR_forward_harmonised) # 8 regional MRI phenotype did not have enough SNPs 
+
+Reg.forward_single = mr_singlesnp(Reg.MR_forward_harmonised)
+
+Reg.forward_leaveoneout = mr_leaveoneout(Reg.MR_forward_harmonised)
+
+# MR Plot
+Reg.forward_scatter <- mr_scatter_plot(Reg.MR_forward_result, Reg.MR_forward_harmonised)
+
+#forest plot
+Reg.forward_forest = mr_forest_plot(Reg.forward_single)
+# leave one out plot
+Reg.forward_leaveoneout_plot = mr_leaveoneout_plot(Reg.forward_leaveoneout)
+
+# Steiger Directionality Test
+# pre-calculating variance (r) using get_r_from_lor(), as Autism was recorded as a binary trait
+Reg.MR_forward_harmonised$r.outcome = get_r_from_lor(lor = Reg.MR_forward_harmonised$beta.outcome, 
+                                                 af = Reg.MR_forward_harmonised$eaf.outcome,
+                                                 ncase = 19870, 
+                                                 ncontrol = 39078,
+                                                 prevalence = 0.0185, 
+                                                 # Assuming Autism prevalence estimate by CDC 2016 - 1 in 54
+                                                 model = 'logit', 
+                                                 # As it is a binary trait population
+                                                 correction = TRUE)
+
+Reg.MR_forward_harmonised$r.exposure = get_r_from_pn(Reg.MR_forward_harmonised$pval.exposure,
+                                                 Reg.MR_forward_harmonised$samplesize.exposure)
+
+Reg.forward_direction <- directionality_test(Reg.MR_forward_harmonised)
+# Pre-calculating r.exposure as package suggested didn't change result conclusion from without pre-calculated r.exposure, so is correction = True/False, it only changed the magnitude.
+```
+```{r Forward Direction: MR.Presso, eval=FALSE, include=FALSE}
+# Single-variate MRpresso Model
+# Remove IMG phenotype with nsnp <5 to run without error
+Reg.MR_forward_result.presso = Reg.MR_forward_result[which(Reg.MR_forward_result$nsnp >= 5),] # MR.presso will not run for nsnp < 5
+Reg.MR_forward_harmonised.presso = Reg.MR_forward_harmonised[which(Reg.MR_forward_harmonised$exposure %in% Reg.MR_forward_result.presso$exposure),]
+# This leaves only 4 phenotype available
+
+Reg.MRpresso_forward_result = run_mr_presso(Reg.MR_forward_harmonised.presso, NbDistribution = 1000, SignifThreshold = 0.05)
+names(Reg.MRpresso_forward_result)<-attr(Reg.MRpresso_forward_result, "exposure") # Get Name from attribute names
+
+# Create Master Table for MRpresso_forward_result
+temp_data = data.frame(matrix(ncol = 3, nrow = 4))
+colnames(temp_data) <- c('phenotype', "global_pval", "global_RSSobs")
+temp_MR_result = data.frame(matrix(ncol = 4, nrow = 0))
+temp_MR_result_corrected = data.frame(matrix(ncol = 4, nrow = 0))
+
+for (pheno in 1:length(names(Reg.MRpresso_forward_result))){
+  phenotype = names(Reg.MRpresso_forward_result[pheno])
+  temp_MR_result = rbind(temp_MR_result, 
+                         Reg.MRpresso_forward_result[[pheno]]$`Main MR results`[1,c(3:6)])
+  temp_MR_result_corrected = rbind(temp_MR_result_corrected, 
+                                   Reg.MRpresso_forward_result[[pheno]]$`Main MR results`[2,c(3:6)])
+  temp_data$phenotype[pheno] = phenotype
+  temp_data$global_pval[pheno] = Reg.MRpresso_forward_result[[pheno]]$`MR-PRESSO results`$`Global Test`$Pvalue # These grab result for horizontal pleiotropy
+  temp_data$global_RSSobs[pheno] = Reg.MRpresso_forward_result[[pheno]]$`MR-PRESSO results`$`Global Test`$RSSobs # These grab result for horizontal pleiotropy
+}
+
+colnames(temp_MR_result_corrected) <- c("Causal Estimate.corrected", "Sd.corrected", 
+                                          "T-stat.corrected", "P-value.corrected")
+# temp_MR_result_corrected rows are NA if no outliner is identified
+
+master_Reg.MRpresso_forward_result = cbind(temp_data, temp_MR_result, temp_MR_result_corrected) # double checked it is correct
+
+write.csv(master_Reg.MRpresso_forward_result, file = here("Result_Table/master_Reg.MRpresso_forward_result.txt"))
+```
+```{r Report Summary for Forawrad MR for Glb.IMG Phenotypes and ASD}
+# Multiple testing correction by MRI phenotype number tested
+Reg.MR_forward_result.ivw = subset(Reg.MR_forward_result, Reg.MR_forward_result$method == "Inverse variance weighted")
+Reg.MR_forward_result.ivw$p.adj = p.adjust(Reg.MR_forward_result.ivw$pval, method = "fdr")
+
+Reg.MR_forward_result.wm = subset(Reg.MR_forward_result, Reg.MR_forward_result$method == "Weighted median")
+Reg.MR_forward_result.wm$p.adj = p.adjust(Reg.MR_forward_result.wm$pval, method = "fdr")
+
+Reg.MR_forward_result.egg = subset(Reg.MR_forward_result, Reg.MR_forward_result$method == "MR Egger")
+Reg.MR_forward_result.egg$p.adj = p.adjust(Reg.MR_forward_result.egg$pval, method = "fdr")
+
+Reg.MR_forward_result =  list(Reg.MR_forward_result.ivw, Reg.MR_forward_result.wm, Reg.MR_forward_result.egg) %>% reduce(full_join)
+
+# Forward MR Result: Assuming all strands are forward
+head(Reg.MR_forward_result[order(Reg.MR_forward_result$p.adj),], 
+     n = nrow(Reg.MR_forward_result[Reg.MR_forward_result$p.adj <=0.05,]))
+
+# Forward MR Result: Assuming all strands are forward
+Reg.forward_scatter
+
+# Forward Directionality Test
+head(Reg.forward_direction[order(Reg.forward_direction$steiger_pval),], 
+     n = nrow(Reg.forward_direction[Reg.forward_direction$steiger_pval<=0.05,]))
+
+# Forward MR Sensitivity Test Results: Assuming all strands are forward
+# Heterogeneity Test
+head(Reg.forward_heterogeneity[order(Reg.forward_heterogeneity$Q_pval),], 
+     n = nrow(Reg.forward_heterogeneity[Reg.forward_heterogeneity$Q_pval<=0.05,]))
+# Pleiotropy Test
+head(Reg.forward_pleiotropy[order(Reg.forward_pleiotropy$pval),], 
+     n = nrow(Reg.forward_pleiotropy[Reg.forward_pleiotropy$pval<=0.05,]))
+
+# Single SNP Test
+head(Reg.forward_single[order(Reg.forward_single$p),], 
+     n = nrow(Reg.forward_single[Reg.forward_single$p<=0.05,]))
+# Leave One Out Test
+head(Reg.forward_leaveoneout[order(Reg.forward_leaveoneout$p),], 
+     n = nrow(Reg.forward_leaveoneout[Reg.forward_leaveoneout$p<=0.05,]))
+
+# Forest Plot
+Reg.forward_forest
+
+# Leave One Out Plot
+Reg.forward_leaveoneout_plot
+
+# MRpresso_foward results
+Reg.MRpresso_foward = fread(here("Result_Table/master_Reg.MRpresso_forward_result.txt"), drop = "V1") 
+# V1 is row name and the row name count is binary from 2 (thus 2, 21, 22, ... , 29) due to how temp_MR_result_corrected was filled during the loop that is recorded in {r Forward Direction: MR.Presso}
+
+Reg.MRpresso_foward$p.adj = p.adjust(Reg.MRpresso_foward$`P-value`, method="fdr") # Multiple testing correction For presso results
+
+head(Reg.MRpresso_foward[order(Reg.MRpresso_foward$p.adj),], 
+     n = nrow(Reg.MRpresso_foward[Reg.MRpresso_foward$p.adj<=0.05,]))
+
+# MRpresso_foward global test result for Pleiotropy 
+head(Reg.MRpresso_foward[order(Reg.MRpresso_foward$`global_pval`),], 
+     n = nrow(Reg.MRpresso_foward[Reg.MRpresso_foward$`global_pval`<=0.05,]))
+
+write.xlsx(Reg.MR_forward_result, file = here("Result_Table/Exp.Reg.IMG_Out.ASD_MR_forward.xlsx"))
+```
+
+## Reverse Direction - Exposure: ASD and Outcome: Reg.IMG Phenotypes
+```{r hpc log for getting Reg.IMG SNPs also present in ASD.sig SNPs}
+# From ASD.GWAS.clumped$SNP, need to find the following SNP stats:
+# "rs13139929" "rs1431594" "rs1440786" "rs1548899" "rs4916723" "rs524890" "rs910805" "rs9311841"
+
+# STEP 1: Manually write ASD.GWAS.clumped.info$SNP_name, and upload to hpc as find_Sig.ASD_list.txt.
+write.table(ASD.GWAS.clumped.info$SNP, here("Script/find_Sig.ASD_SNP_list.txt"), row.names = FALSE, col.names = FALSE)
+
+# STEP 2: Establish file list
+file_names.list = keep.list
+file_names.list = gsub(file_names.list, pattern = "(._)(.*)", replacement = "\\1plinkmeta\\2.txt") # use regex logic to generate file name same in hpc
+write.table(file_names.list, here("Script/find_reg.MRI.GWAS.txt"), row.names = FALSE, col.names=FALSE)
+
+# STEP 3: Set Variables
+
+# ASD_list=$(cat /rds/user/yg330/hpc-work/pgs_img/scripts/find_Sig.ASD_SNP_list.txt)
+# GWAS_list=$(cat /rds/user/yg330/hpc-work/pgs_img/scripts/find_reg.MRI.GWAS.txt)
+
+# STEP 4: Check if variable is read-in correctly:
+# for file in ${ASD_list}; do echo $file; done
+# for file in ${GWAS_list}; do echo $file; done
+
+# STEP 5: Go to corresponding folders and print out the wanted row with Sig.ASD.SNP
+
+# cd /rds/project/rb643/rds-rb643-ukbiobank2/Data_Genetics/GWAS_Regional_Sumstats/
+# cd ./ISOVF
+# awk '/rs1548899/' ISOVF_plinkmeta41.txt
+# awk '/rs9311841/' ISOVF_plinkmeta41.txt
+# 
+# Manually grab sumstats from each file.
+
+
+#FIXME This code works for munged regional file, maybe can be used for optimisation in the future:
+
+# for file in $(ls -d *meta_reg*sumstats.gz.txt);do file_name_list=(${file_name_list[*]} "$file"); done
+# for file in ${file_name_list[@]};do echo "$file";awk 'FNR==NR {a[$1]; next}; $1 in a' ASD_SNP_list.txt $file;done
+```
+
+```{r Data Manipulation for Reverse Direction - Exposure: ASD and Outcome: Reg.IMG Phenotypes, eval=FALSE, include=FALSE}
+Reg.IMG.GWAS_Sig.ASD_overlap = fread(here("Result_Table/ASD_Sig.SNP_in_Reg.IMG.GWAS.txt"))
+
+outcome_Reg.IMG = format_data(Reg.IMG.GWAS_Sig.ASD_overlap, type = "outcome",
+  phenotype_col = "Pheno",
+  snp_col = "SNP",
+  beta_col = "BETA",
+  se_col = "SE",
+  effect_allele_col = "A1",
+  other_allele_col = "A2",
+  pval_col = "P",
+  min_pval = 1e-200,
+  chr_col = "CHR",
+  pos_col = "BP")
+
+# Data Harmonisation
+Reg.MR_reverse_harmonised <- harmonise_data(exposure_ASD, outcome_Reg.IMG, action = 2)
+# Try to infer positive strand alleles, using allele frequencies for palindromes (default, conservative)
+
+# Sample Size
+Reg.MR_reverse_harmonised$samplesize.outcome = 36843 # IMG_meta number is the same among phenotypes; ABCD+UKB
+Reg.MR_reverse_harmonised$samplesize.exposure =  58948  # Daner_ASD_GWAS_unstratified (NCa + NCo)= 58948
+
+# MR Tests
+Reg.MR_reverse_result = mr(Reg.MR_reverse_harmonised, method_list=c("mr_ivw", "mr_weighted_median", "mr_egger_regression"))
+
+# Sensitivity Tests
+Reg.reverse_heterogeneity = mr_heterogeneity(Reg.MR_reverse_harmonised, method_list = c("mr_ivw", "mr_egger_regression"))
+# mr_weighted_median" don't provide this test
+
+Reg.reverse_pleiotropy = mr_pleiotropy_test(Reg.MR_reverse_harmonised)
+
+Reg.reverse_single = mr_singlesnp(Reg.MR_reverse_harmonised)
+
+Reg.reverse_leaveoneout = mr_leaveoneout(Reg.MR_reverse_harmonised)
+
+# MR Plot
+Reg.reverse_scatter <- mr_scatter_plot(Reg.MR_reverse_result, Reg.MR_reverse_harmonised)
+
+#forest plot
+Reg.reverse_forest = mr_forest_plot(Reg.reverse_single)
+
+# leave one out plot
+Reg.reverse_leaveoneout_plot = mr_leaveoneout_plot(Reg.reverse_leaveoneout)
+
+# Steiger Directionality Test
+# pre-calculating variance (r) using get_r_from_lor(), as Autism was recorded as a binary trait
+
+# For MR_reverse_harmonised
+Reg.MR_reverse_harmonised$r.exposure = get_r_from_lor(lor = Reg.MR_reverse_harmonised$beta.exposure, 
+                                                  af = Reg.MR_reverse_harmonised$eaf.exposure,
+                                                  ncase = 19870,
+                                                  ncontrol = 39078,
+                                                  prevalence = 0.0185,  
+                                                  # Assuming Autism prevalence estimate by CDC 2016 - 1 in 54
+                                                  model = 'logit', 
+                                                  # As it is a binary trait population
+                                                  correction = TRUE)
+Reg.MR_reverse_harmonised$r.outcome = get_r_from_pn(Reg.MR_reverse_harmonised$pval.outcome,
+                                                  Reg.MR_reverse_harmonised$samplesize.outcome)
+
+Reg.reverse_direction <- directionality_test(Reg.MR_reverse_harmonised)
+```
+
+```{r Reverse Direction: MR.Presso, eval=FALSE, include=FALSE}
+# Single-variate MRpresso Model
+Reg.MRpresso_reverse_result = run_mr_presso(Reg.MR_reverse_harmonised, NbDistribution = 1000, SignifThreshold = 0.05)
+names(Reg.MRpresso_reverse_result) <- attr(Reg.MRpresso_reverse_result, "outcome")
+
+# Create Master Table for MRpresso_reverse_result
+temp_data = data.frame(matrix(ncol = 3, nrow = 19))
+colnames(temp_data) <- c('phenotype', "global_pval", "global_RSSobs")
+temp_MR_result = data.frame(matrix(ncol = 4, nrow = 0))
+temp_MR_result_corrected = data.frame(matrix(ncol = 4, nrow = 0))
+
+for (pheno in 1:length(names(Reg.MRpresso_reverse_result))){
+  phenotype = names(Reg.MRpresso_reverse_result[pheno])
+  temp_MR_result = rbind(temp_MR_result,
+                         Reg.MRpresso_reverse_result[[pheno]]$`Main MR results`[1,c(3:6)])
+  temp_MR_result_corrected = rbind(temp_MR_result_corrected,
+                                   Reg.MRpresso_reverse_result[[pheno]]$`Main MR results`[2,c(3:6)])
+  temp_data$phenotype[pheno] = phenotype
+  temp_data$global_pval[pheno] = Reg.MRpresso_reverse_result[[pheno]]$`MR-PRESSO results`$`Global Test`$Pvalue
+  temp_data$global_RSSobs[pheno] = Reg.MRpresso_reverse_result[[pheno]]$`MR-PRESSO results`$`Global Test`$RSSobs
+}
+
+colnames(temp_MR_result_corrected) <- c("Causal Estimate.corrected", "Sd.corrected", 
+                                          "T-stat.corrected", "P-value.corrected")
+# temp_MR_result_corrected rows are NA if no outliner is identified
+master_Reg.MRpresso_reverse_result = cbind(temp_data, temp_MR_result, temp_MR_result_corrected)
+write.csv(master_Reg.MRpresso_reverse_result, file = here("Result_Table/master_Reg.MRpresso_reverse_result"))
+```
+
+```{r Report Summary for Reverse MR for Glb.IMG Phenotypes and ASD}
+# Multiple testing correction (n=10-12 for each test)
+Reg.MR_reverse_result.ivw = subset(Reg.MR_reverse_result, Reg.MR_reverse_result$method == "Inverse variance weighted")
+Reg.MR_reverse_result.ivw$p.adj = p.adjust(Reg.MR_reverse_result.ivw$pval, method = "fdr")
+
+Reg.MR_reverse_result.wm = subset(Reg.MR_reverse_result, Reg.MR_reverse_result$method == "Weighted median")
+Reg.MR_reverse_result.wm$p.adj = p.adjust(Reg.MR_reverse_result.wm$pval, method = "fdr")
+
+Reg.MR_reverse_result.egg = subset(Reg.MR_reverse_result, Reg.MR_reverse_result$method == "MR Egger")
+Reg.MR_reverse_result.egg$p.adj = p.adjust(Reg.MR_reverse_result.egg$pval, method = "fdr")
+
+Reg.MR_reverse_result =  list(Reg.MR_reverse_result.ivw, Reg.MR_reverse_result.wm, Reg.MR_reverse_result.egg) %>% reduce(full_join)
+
+# Reverse Directionality Test
+head(reverse_direction[order(reverse_direction$steiger_pval),], 
+     n = nrow(reverse_direction[reverse_direction$steiger_pval<=0.05,]))
+
+# Reverse MR Sensitivity Test Results: Assuming all strands are forward
+# Heterogeneity Test
+head(reverse_heterogeneity[order(reverse_heterogeneity$Q_pval),], 
+     n = nrow(reverse_heterogeneity[reverse_heterogeneity$Q_pval<=0.05,]))
+# Pleiotropy Test #
+head(reverse_pleiotropy[order(reverse_pleiotropy$pval),], 
+     n = nrow(reverse_pleiotropy[reverse_pleiotropy$pval<=0.05,]))
+# Single SNP Test
+head(reverse_single[order(reverse_single$p),], 
+     n = nrow(reverse_single[reverse_single$p<=0.05,]))
+# Leave One Out Test
+head(reverse_leaveoneout[order(reverse_leaveoneout$p),], 
+     n = nrow(reverse_leaveoneout[reverse_leaveoneout$p<=0.05,]))
+
+# Forest Plot
+reverse_forest
+
+# Leave One Out Plot
+reverse_leaveoneout_plot
+
+# MRpresso_reverse results
+Reg.MRpresso_reverse = fread(here("Result_Table/master_Reg.MRpresso_reverse_result"), drop='V1') 
+# V1 is row name and the row name count is binary from 2 (thus 2, 21, 22, ... , 29) due to how temp_MR_result_corrected was filled during the loop that is recorded in {r Reverse Direction: MR.Presso}
+
+Reg.MRpresso_reverse$p.adj = p.adjust(Reg.MRpresso_reverse$`P-value`, method="fdr") # For presso results
+
+write.xlsx(Reg.MR_reverse_result, file = here("Result_Table/Exp.ASD_Out.Reg.IMG_MR_reverse.xlsx"))
+```

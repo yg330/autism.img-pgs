@@ -1,0 +1,347 @@
+---
+title: "MolPsych_locallydone_codes"
+author: "Yuanjun Gu"
+date: "2024-08-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(here)
+library(data.table, include.only = "fread")
+library(tidyverse)
+library(here)
+library(fmsb, include.only = "NagelkerkeR2")
+```
+
+## Reviewer1
+### ABCD
+```{r Reviewer1_Q2: chro:pos to rsID for generating new PGS, eval=FALSE, include=FALSE}
+# read in chrpos to rsid file
+chrpos_to_rsid = fread(here("script/plinkrecodingfile2.txt"))
+chrpos_to_rsid = chrpos_to_rsid %>% rename("V1" = "V2")
+
+for (i in 1:22) {
+  chr.name = paste0("chr", i, ":")
+  chr.table = chrpos_to_rsid[str_detect(chrpos_to_rsid$V1, chr.name), ]
+  chr.name.withoutcol = paste0("chr", i)
+  write.loc = here(paste0("data/", chr.name.withoutcol, "_pos.txt"))
+  write.table(chr.table, file=write.loc, row.names = FALSE)
+}
+```
+
+```{r Reviewer1_Q2: translate chr:pos to rsID, eval=FALSE, include=FALSE}
+# read in necessary files
+# filtered SNP file
+file.loc = list.files(here("data"), pattern="abcd", full.names=TRUE)
+file.name = gsub(here("data/|.QCed.chrloc.txt"), "", file.loc) # remove anything fit the patterns
+
+# dictionary file to translate SNP to rsID
+chrpos.loc = list.files(here("data"), pattern="_pos.txt", full.names=TRUE)
+chrpos.name = gsub(here("data/|_pos.txt"), "", chrpos.loc) # remove anything fit the patterns
+
+
+# for loop for the autosome translation
+for (i in 1:length(chrpos.loc)) {
+  # read in files
+  file.table = fread(file.loc[i], header = FALSE) # read in filtered SNP list, no header
+  chrpos_to_rsid = fread(chrpos.loc[i]) # read in chr:pos to rsid info file
+  
+  #merge table
+  merged.table = left_join(file.table, chrpos_to_rsid, by = "V1")
+  merged.table.noNA = merged.table %>% mutate(ID = coalesce(ID, V1)) # this detects NA in rsID and if there is NA in a ID row, it will substitute it with V1 (chr:pos) value instead
+  merged.table.noNA.noDup = data.frame(unique(merged.table.noNA$ID)) # remove duplicated IDs
+  
+  # write as csv
+  merged.table.name = paste0("data/",file.name[i],"_",chrpos.name[i],"_rsid_translated.txt")
+  write.table(merged.table.noNA.noDup, file = here(merged.table.name), col.names = FALSE, row.names = FALSE)
+}
+
+
+#NOTE some variants share the same rsID: ~ 300 SNPs (150 duplicated entry) in chr1 and so on
+#NOTE If you need to retrace some steps to check specificity, look into merged.table, merged.tablenoNA and merged.table.noNA.noDup!
+```
+
+```{r Reviewer1_Q2: merge to generate SNP extract list, eval=FALSE, include=FALSE}
+SNP.loc = list.files(here("data"), pattern="translated", full.names=TRUE)
+merged_df = data.frame("V1" = character())
+
+for (i in 1:length(SNP.loc)) {
+  SNP.table = fread(SNP.loc[i], header = FALSE) # read in filtered SNP list, no header
+  #merge table
+  merged_df = full_join(merged_df, SNP.table, by = "V1")
+}
+
+write.table(merged_df, file = here("data/abcd_merged_autosome_SNP.QCed.formatted.txt"), row.names = FALSE, col.names = FALSE) # unique 9,931,100 SNPs in total
+```
+
+```{r Reviewer1_Q2: format generated SNP extract list, eval=FALSE, include=FALSE}
+merged_df = fread(here("data/abcd_merged_autosome_SNP.QCed.formatted.txt"), header = FALSE)
+merged_df = gsub("chr", "", merged_df$V1) # remove chr1 as it does not fit format
+merged_df = sub(":([^:]*)$", " _\\1", merged_df) # replace last occurrence of : to _
+merged_df = sub(":([^:]*)$", " _\\1", merged_df) # replace last occurrence of : to _
+merged_df = gsub(" ", "", merged_df) # remove all white space generated from regrex
+merged_df = as.data.frame(merged_df)
+
+
+write.table(merged_df, file = here("data/abcd_merged_autosome_SNP.QCed.formatted.againforPLINK.txt"), row.names = FALSE, col.names = FALSE, quote = FALSE)
+#TODO: Fix regrex string serch so it doesn't generate additional space uneeded.
+```
+
+```{r Reviewer1_Q2: generating bfiles for PGS weight, eval=FALSE, include=FALSE}
+# PLINK log for generating bfiles:
+
+# plink2 --bfile /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ABCD/ABCD_hg19_allchrs_europeanonly --extract abcd_merged_autosome_SNP.QCed.formatted.againforPLINK.txt --make-bed  --out abcd_autosome_maf0.01_r2
+
+#Added 0.9 later to all bfiles and logs as I forget to add at the end of it.
+```
+
+```{r Reviewer1_Q2: ABCD Merge autosome PGS weight for scoring, eval=FALSE, include=FALSE}
+PGS.loc = list.files(here("pgs_weight_data"), pattern="abcd_pst_eff_a1", full.names=TRUE)
+PGS.merged_df = data.frame("V1" = integer(), "V2" = character(), "V3" = integer(), "V4" = character(), "V5" = character(), "V6" = numeric())
+
+for (i in 1:length(PGS.loc)) {
+  PGS.table = fread(PGS.loc[i], header = FALSE) # read in filtered SNP list, no header
+  #merge table
+  PGS.merged_df = full_join(PGS.merged_df, PGS.table)
+}
+
+write.table(PGS.merged_df, file = here("pgs_weight_data/abcd_merged_autosome_PGS_weight.txt"), row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+```{r Reviewer1_Q2: PLINK1.9 PGS score, eval=FALSE, include=FALSE}
+# module load plink/1.9
+# plink --bfile /rds/user/yg330/hpc-work/pgs_img/Supplement/genetic_data_comment/abcd_autosome_maf0.01_r20.9 --score abcd_merged_autosome_PGS_weight.txt 2 4 6 center --out abcd_ASD_PGS
+```
+
+```{r Reviewer1_Q2: Compare old and new PGS score difference for ABCD, echo=TRUE}
+ABCD_maf0.001_r20.4 = fread(here("ABCD_pgs.img.csv"), select = c("IID", "PGS"))
+ABCD_maf0.01_r20.9 = fread(here("pgs_weight_data/abcd_ASD_PGS.profile"), select = c("IID", "SCORE"))
+
+ABCD_neuroimaging = left_join(ABCD_maf0.001_r20.4, ABCD_maf0.01_r20.9)
+ABCD_neuroimaging$SCORE = scale(ABCD_neuroimaging$SCORE) # applying same standardization as mentioned in the preprint
+cor.test(ABCD_neuroimaging$PGS, ABCD_neuroimaging$SCORE)
+```
+
+### UKB
+```{r R SERVER LOG: Create Data required for GWAS: Extract SNP list, eval=FALSE, include=FALSE}
+# QC step:
+# Filter for MAF > 0.01
+# Imputation Quality R2 > 0.9
+# No need for filter for hwe (Hardy-Weinberg Equilibrium) > 0.000001 as it has already been done during imputation step by UKB
+
+# SNP genotype data
+file.loc = list.files("/rds/user/yg330/hpc-work/pgs_img_2/genetic_data", pattern="v3.txt", full.names=TRUE) # grab all chromosome file locations
+file.name = gsub("/rds/user/yg330/hpc-work/pgs_img_2/genetic_data/ukb_mfi_|_v3.txt", "", file.loc) # remove anything fit the patterns
+
+for (i in 1:22) { # Create a list of SNPs that have v6 {MAF > 0.001} and imputation v8 {r2 > 0.4}
+  tmp_file = fread(file.loc[i])
+  tmp_file = filter(tmp_file, tmp_file$V6>0.01 & tmp_file$V8 > 0.9)
+  tmp_name = paste0("genetic_data_comment/ukb_", file.name[i],".QCed.txt")
+  write.csv(tmp_file, file = here(tmp_name))
+}
+
+write.csv(keep.SNP, file = here("genetic_data_comment/keep.SNP_MAF0.01_R20.9.txt"), row.names = FALSE) # write out results, 9370446 entries
+```
+
+```{r R SERVER LOG: format by chromosome to make bed per chromosomes, eval=FALSE, include=FALSE}
+# correctly formatted SNP file to --extract
+chr.SNP.list = list.files(here("genetic_data_comment"), pattern = "ukb_chr", full.names = TRUE)
+
+for (i in 1:length(chr.SNP.list)){ # loop for generating and selecting only SNP lists
+  tmp_file = fread(chr.SNP.list[i])
+  tmp_file = select(tmp_file, "V2")
+  tmp_name = gsub(".txt", "", chr.SNP.list[i])
+  tmp_name.loc = paste0(tmp_name, ".formatted.txt")
+  write.table(tmp_file, file = tmp_name.loc, row.names = FALSE, col.names = FALSE, quote = FALSE)
+}
+
+# PLINK.chr*.bed/bim/fam = UKB QCed SNP ONLY Files.
+```
+
+```{r Reviewer1_Q2: UKB Merge autosome PGS weight for scoring, eval=FALSE, include=FALSE}
+# PRScs calculated weight based on one chromosome bed at a time
+PGS.loc = list.files(here("pgs_weight_data"), pattern="ukb_pst_eff_a1", full.names=TRUE)
+PGS.merged_df = data.frame("V1" = integer(), "V2" = character(), "V3" = integer(), "V4" = character(), "V5" = character(), "V6" = numeric())
+
+for (i in 1:length(PGS.loc)) {
+  PGS.table = fread(PGS.loc[i], header = FALSE) # read in filtered SNP list, no header
+  #merge table
+  PGS.merged_df = full_join(PGS.merged_df, PGS.table)
+}
+
+write.table(PGS.merged_df, file = here("pgs_weight_data/ukb_merged_autosome_PGS_weight.txt"), row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+```
+
+```{r Reviewer1_Q2: PLINK merged autosomes and PGS score generation, eval=FALSE, include=FALSE}
+# Generate Merge Chromosomes
+
+# cd /home/yg330/rds/hpc-work/pgs_img/Supplement/genetic_data_comment
+# module load plink/2.00-alpha
+
+# for i in {1..22}; do plink2 \
+# --bfile PLINK.chr${i} \
+# --rm-dup force-first \
+# --make-bed \
+# --out PLINK.chr${i}.nodup; done
+
+# module purge
+# module load plink/1.9
+# plink --merge-list /rds/user/yg330/hpc-work/pgs_img/Supplement/script_comment/mergelist.txt --make-bed --out UKB_autosome_MAF0.01_r20.9
+
+# Generate PGS SCORE
+# cd /PGS_weight_comment/
+# plink --bfile /rds/user/yg330/hpc-work/pgs_img/Supplement/genetic_data_comment/UKB_autosome_MAF0.01_r20.9_13082024 --score ukb_merged_autosome_PGS_weight.txt 2 4 6 center --out UKB_ASD_PGS
+
+```
+
+```{r Reviewer1_Q2: Compare new and old PGS score difference for UKB, echo=TRUE}
+UKB_maf0.001_r20.4 = fread(here("pgs.img.csv"), select = c("IID", "PGS_scaled"))
+UKB_maf0.01_r20.9 = fread(here("pgs_weight_data/UKB_ASD_PGS.profile"), select = c("IID", "SCORE"))
+
+UKB_neuroimaging = left_join(UKB_maf0.001_r20.4, UKB_maf0.01_r20.9)
+UKB_neuroimaging$SCORE = scale(UKB_neuroimaging$SCORE) # applying same standardization
+cor.test(UKB_neuroimaging$PGS_scaled, UKB_neuroimaging$SCORE)
+```
+
+## Reviewer2: UKB ONLY
+
+```{r Reviewer2_Q1: ASD PGS prediction power, eval=FALSE, include=FALSE}
+UKB_MHdx = fread(here("data/MH_diagnosis.txt"))
+UKB_ASD = UKB_MHdx %>% filter_at(vars(starts_with("f.29000")), any_vars(. == 6)) # filter at any column start with name f.29000 and within them any value == 6
+UKB_ASD_formatted = data.frame(UKB_ASD$f.eid, UKB_ASD$f.eid)
+# write.table(UKB_ASD_formatted, file = here("UKB_ASD_eid.txt"),row.names = FALSE, col.names = FALSE)
+```
+
+```{r Reviewer2_Q1: Filter ASD patients with QCed UKB participants, eval=FALSE, include=FALSE}
+QCed_UKB = fread(here("UKB_ID.QCed.txt"))
+ASD_UKB = fread(here("UKB_ASD_eid.txt"))
+
+QCed_UKB_ASD = QCed_UKB %>% filter(QCed_UKB$eid %in% ASD_UKB$V1) # 370 people fit criteria, removed 38 people
+QCed_UKB_ASD = data.frame(QCed_UKB_ASD$eid, QCed_UKB_ASD$eid)
+write.table(QCed_UKB_ASD, file = here("QCed_UKB_ASD_eid.txt") , col.names = FALSE, row.names = FALSE, quote = FALSE)
+```
+
+```{r Reviewer2_Q1: Update --keep population with UKB_10K population, eval=FALSE, include=FALSE}
+ASD.eid = fread(here("QCed_UKB_ASD_eid.txt"), header = FALSE)
+colnames(ASD.eid) = c("FID", "IID")
+# Format 10K eid
+UKB10K.eid = fread(here("data/UKB_random10K.csv"), select = c("IID"))
+UKB10K.eid$FID = UKB10K.eid$IID
+
+eid.merged = full_join(ASD.eid, UKB10K.eid, by = c("FID", "IID"))
+write.table(eid.merged, file = here("UKB_R2Q1_eid_13082024.txt"), quote = FALSE, row.names = FALSE, col.names = FALSE)
+```
+
+```{r Reviewer2_Q1: Find all relevant ASD GWAS SNPs for scoring and extracting SNPs, eval=FALSE, include=FALSE}
+# Extract SNPs needed for making bed for saving spaces
+write.table(ASD.UKB.SNP.df$V2, file = here("Extract_UKB_ASD_SNP.txt"), row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+# For generating ASD PGS scores for ASD diagnosed population
+ASD.UKB.SNP.loc = list.files(here("data/Autism_grove_ipsychonly2020_UKB_Prscs_weights"), pattern="pst_eff_a1", full.names=TRUE)
+ASD.UKB.SNP.df = data.frame("V1" = integer(), "V2" = character(), "V3" = integer(), "V4" = character(), "V5" = character(), "V6" = numeric())
+
+for (i in 1:length(ASD.UKB.SNP.loc)) {
+  PGS.table = fread(ASD.UKB.SNP.loc[i], header = FALSE) # read in filtered SNP list, no header
+  #merge table
+  ASD.UKB.SNP.df = full_join(ASD.UKB.SNP.df, PGS.table)
+}
+
+write.table(ASD.UKB.SNP.df, file = here("pgs_weight_data/R2Q1_ukb_merged_autosome_PGS_weight.txt"), row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+## To PLINK to generate ASD.pgen.PLINK bed and then scores for ASD population
+```
+
+```{r OUTDATED LOG: PLINK ASD PGS Score generation LOG by chormosome, eval=FALSE, include=FALSE}
+# STEP 1. REMOVE DUPLICATION SO PLINK1.9 CAN RUN SCORES BY CHROMOSOME - Only retain first instance of the duplicated rsID
+# cd /home/yg330/rds/hpc-work/pgs_img/Supplement/genetic_data_comment
+# module load plink/2.00-alpha
+
+# for i in {1..22}; do plink2 \
+# --bfile ASD.pgen.PLINK.chr${i} \
+# --rm-dup force-first \
+# --make-bed \
+# --out ASD.pgen.PLINK.chr${i}.nodup; done
+
+# STEP 2. Merge all UKB chromosomes
+# cd /home/yg330/rds/hpc-work/pgs_img/Supplement/genetic_data_comment
+# module load plink/1.9
+# plink --merge-list /rds/user/yg330/hpc-work/pgs_img/Supplement/script_comment/mergelist.nodup.txt --make-bed --out UKB_ASD_autosome_merged.12082024
+
+# STEP 3. Generate score and add them up
+# plink --bfile UKB_ASD_autosome_merged.12082024 --score /rds/user/yg330/hpc-work/pgs_img/Supplement/PGS_weight_comment/R2Q1_ukb_merged_autosome_PGS_weight.txt 2 4 6 center --out UKB_ASD_autosome_12082024
+
+
+```
+
+```{r OUTDATED LOG: Reviewer2_Q1: generate total PGS sum and logistic regression result, eval=FALSE, include=FALSE}
+# READ IN ORIGINAL SCORES
+UKBasd <- read.csv("C:/Users/yg330/OneDrive - University of Cambridge/Documents/Projects/pgs_img/PGS/UKB/Autism_grove_ipsychonly2020_PRSCS.txt", header = T, sep = " ") # unstratified
+
+# generate PGS sum score for all QCed autistic population
+ukb.asd.pgs.score.loc = list.files(here("pgs_weight_data"), pattern="ASD.score", full.names=TRUE)
+ukb.asd.pgs.score.name = gsub("C:/Users/yg330/OneDrive - University of Cambridge/Documents/Projects/pgs_img/Supplement/pgs_weight_data/ASD.score.|.profile", "", ukb.asd.pgs.score.loc)
+pgs.table.merged = data.frame("FID" = integer(), "IID" = integer())
+
+for (i in 1:22) {
+  pgs.table = fread(ukb.asd.pgs.score.loc[i])
+  pgs.table = pgs.table %>% select("FID", "IID", "SCORE")
+  colnames(pgs.table)[3] = paste0("SCORE_", ukb.asd.pgs.score.name[i])
+  pgs.table.merged = full_join(pgs.table.merged, pgs.table, by = c("FID", "IID"))
+}
+
+pgs.table.merged$SCORE_SUM = rowSums(pgs.table.merged[,c(3:24)])
+pgs.table.merged$dx = "ASD"
+
+# Logistic Regression
+UKB_10K = fread(here("data/UKB_random10K.csv"), drop = 1)
+```
+
+```{r Logistic Regression Result, echo=TRUE}
+# PGS Score generated based on 10K+ASD population autosome bed and original PGS weights
+ASD10K = fread(here("pgs_weight_data/R2Q1_UKB_ASD10K_maf0.001r20.4_autosome_15082024.profile"), select = c("FID", "IID", "SCORE"))
+ASD.id = fread(here("QCed_UKB_ASD_eid.txt")) %>% rename("FID" = "V1", "IID" = "V2") # 8 ASD was recorded as CN in neuroimaging 10K
+ASD10K$dx = ifelse(ASD10K$IID %in% ASD.id$IID, "ASD", "CN")
+ASD10K$dx_id = ifelse(ASD10K$dx == "ASD", 1, 0) # Dummy dx label into binary codes: ASD = 1, CN = 0
+
+# Read in COVAR for log: Sex, Year of Birth, genetic PCA 1:10
+ASD10K.covar = fread(here("R2Q1_ASD10K_log_covar.txt"))
+ASD10K.covar = rename("IID" = "eid", ASD10K.covar)
+ASD10K.full = left_join(ASD10K, ASD10K.covar) # 5 CN participant do not have any phenotype data recorded in UKB CSV
+ASD10K.full = ASD10K.full %>% rename("g.sex" = "22001-0.0", "Year.of.Birth" = "34-0.0") # both data don't have special code like -9
+colnames(ASD10K.full)[8:17] = paste0("gPCA", 1:10) # rename gPCA for easy referal
+
+# Check histogram to see how good predictability may be 
+ASD10K.PGS.hist = ggplot(ASD10K.full, aes(x=SCORE, color=dx)) + geom_histogram(fill="white", alpha=0.5, position="identity")
+ASD10K.PGS.hist
+
+ASD10K.PGS.box = ggplot(ASD10K.full, aes(x = factor(dx), y = SCORE)) + geom_boxplot()
+ASD10K.PGS.box
+
+# Logistic Regression: glm()
+ASD10K.glm <- glm(dx_id ~ SCORE + g.sex + Year.of.Birth + gPCA1 + gPCA2 + gPCA3 + gPCA4 + gPCA5 + gPCA6 + gPCA7 + gPCA8 + gPCA9 + gPCA10, 
+                  family = binomial, data = ASD10K.full)
+summary(ASD10K.glm)
+
+# Is the model well-specified?
+pchisq(2996.7, 10343, lower.tail = FALSE) # Residual deviance
+# 1, yes
+
+# Is the overall model better than the null model?
+pchisq(3192.2 - 2996.7, 10356 - 10343, lower.tail = FALSE)
+# p = 1.145548e-34 ***, it is significantly better than the null model.
+
+# Are any of the individual predictors significant?
+anova(ASD10K.glm, test = "Chisq")
+#               Df    Deviance     Resid. Df     Resid. Dev  Pr(>Chi)
+# SCORE          1    8.199        10355         3184.0      0.004192 **
+
+#Inc.R2
+# no PGS model:
+ASD10K.glm.noPGS <- glm(dx_id ~ g.sex + Year.of.Birth + gPCA1 + gPCA2 + gPCA3 + gPCA4 + gPCA5 + gPCA6 + gPCA7 + gPCA8 + gPCA9 + gPCA10, 
+                        family = binomial, data = ASD10K.full)
+summary(ASD10K.glm.noPGS)
+
+NagelkerkeR2(ASD10K.glm)$R2 - NagelkerkeR2(ASD10K.glm.noPGS)$R2
+```
